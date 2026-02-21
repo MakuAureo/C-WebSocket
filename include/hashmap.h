@@ -20,5 +20,6 @@ int mapPut(Map * map, void * key, void * value);
 void mapRemove(Map * map, void * key);
 void * mapGet(Map * map, void * key);
 void mapClear(Map * map);
+void mapForEach(Map * map, void * context, void (*func)(void * value, void * context));
 
 #endif

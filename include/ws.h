@@ -1,9 +1,7 @@
 #ifndef WS_H
 #define WS_H
 
-#include <sys/epoll.h>
 #include <arpa/inet.h>
-
 #include <hashmap.h>
 
 typedef struct {

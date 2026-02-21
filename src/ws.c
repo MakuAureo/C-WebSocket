@@ -314,22 +314,14 @@ int bindSocket(WSSocket * socketInfo, unsigned int const port) {
     return -1;
 }
 
+static void freeConnectionResourcesIteratorWrapper(void * clientPtr, void * contextPtr) {
+  WSSocket * socketInfo = (WSSocket *)contextPtr;
+  WSConnection * client = (WSConnection *)clientPtr;
+  freeConnectionResources(socketInfo, client);
+}
+
 void closeSocket(WSSocket * socketInfo) {
-  if (socketInfo->connections.count != 0) {
-    for (int i = 0; i < socketInfo->connections.capacity; i++) {
-      uint8_t *entry = socketInfo->connections.entries + (i * (socketInfo->connections.key_size + socketInfo->connections.value_size));
-      void *key = entry;
-      char isEmpty = 1;
-      for (int j = 0; j < socketInfo->connections.key_size; j++) {
-        if (entry[j] != 0) {
-          isEmpty = 0;
-          break;
-        }
-      }
-      if (isEmpty == 1) continue;
-      freeConnectionResources(socketInfo, mapGet(&(socketInfo->connections), key));
-    }
-  }
+  mapForEach(&(socketInfo->connections), socketInfo, freeConnectionResourcesIteratorWrapper);
   freeMap(&(socketInfo->connections));
   close(socketInfo->socketFD);
   memset(socketInfo, 0, sizeof(WSSocket));

@@ -10,9 +10,9 @@
 #define PORT 21455
 
 void sigintHandler(int sig);
-void acceptNewClient(WSConnection const * const client);
-void handshakeNewClient(WSConnection const * const client);
-size_t processClientMessage(WSConnection const * const client, char const * const incData, char ** outData);
+void onConnect(WSConnection const * const client);
+void onHandshake(WSConnection const * const client);
+size_t onMessage(WSConnection const * const client, char const * const incData, char ** outData);
 
 WSSocket socketInfo;
 
@@ -26,26 +26,27 @@ int main(int argc, char **argv) {
   }
 
   signal(SIGINT, sigintHandler);
+  printf("(Server): Started and bound socket to port: %d\n", PORT);
 
-  eventLoop(&socketInfo, acceptNewClient, handshakeNewClient, processClientMessage);
+  eventLoop(&socketInfo, onConnect, onHandshake, onMessage);
 }
 
 void sigintHandler(int sig) {
-  const char msg[] = "Closing open connections and free-ing allocated memory\n";
+  const char msg[] = "\n(Server): Closing open connections and free-ing allocated memory\n";
   write(STDOUT_FILENO, msg, strlen(msg));
   closeSocket(&socketInfo);
   exit(EXIT_SUCCESS);
 }
 
-void acceptNewClient(WSConnection const * const client) {
+void onConnect(WSConnection const * const client) {
   return;
 }
 
-void handshakeNewClient(WSConnection const * const client) {
+void onHandshake(WSConnection const * const client) {
   return;
 }
 
-size_t processClientMessage(WSConnection const * const client, char const * const incData, char ** outData) {
+size_t onMessage(WSConnection const * const client, char const * const incData, char ** outData) {
   char testString[] = 
     "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec fringilla ligula ut magna congue dapibus. "
     "Vestibulum ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia curae; "

@@ -67,13 +67,13 @@ static int resizeArray(Map * map, int grow) {
   map->count = 0;
 
   for (int i = 0; i < map->capacity; i++) {
-    uint8_t *oldEntry = oldEntries + (i * entrySize);
-    void *key = oldEntry;
-    void *value = oldEntry + map->key_size;
+    uint8_t * oldEntry = oldEntries + (i * entrySize);
+    void * key = oldEntry;
+    void * value = oldEntry + map->key_size;
 
     if (isNull(key, map->key_size)) continue;
 
-    uint8_t *dest = linearProbing(map, newEntries, key, entrySize, newCapacity);
+    uint8_t * dest = linearProbing(map, newEntries, key, entrySize, newCapacity);
 
     memcpy(dest, key, map->key_size);
     memcpy(dest + map->key_size, value, map->value_size);
@@ -110,7 +110,7 @@ int mapPut(Map * map, void * key, void * value) {
   else if (map->count < map->capacity * MIN_LOAD)
     resizeArray(map, false);
 
-  uint8_t *entry = linearProbing(map, map->entries, key, (map->key_size + map->value_size), map->capacity);
+  uint8_t * entry = linearProbing(map, map->entries, key, (map->key_size + map->value_size), map->capacity);
 
   int isNewKey = isNull(entry, map->key_size);
   if (isNewKey && isNull(entry + map->key_size, map->value_size))
@@ -125,7 +125,7 @@ int mapPut(Map * map, void * key, void * value) {
 void mapRemove(Map * map, void * key) {
   if (map->count == 0) return;
 
-  uint8_t *entry = linearProbing(map, map->entries, key, (map->key_size + map->value_size), map->capacity);
+  uint8_t * entry = linearProbing(map, map->entries, key, (map->key_size + map->value_size), map->capacity);
 
   memset(entry, 0, map->key_size);
 
@@ -138,7 +138,7 @@ void mapRemove(Map * map, void * key) {
 void * mapGet(Map * map, void * key) {
   if (map->capacity == 0) return NULL;
 
-  uint8_t *entry = linearProbing(map, map->entries, key, (map->key_size + map->value_size), map->capacity);
+  uint8_t * entry = linearProbing(map, map->entries, key, (map->key_size + map->value_size), map->capacity);
 
   if (isNull(entry, map->key_size)) 
     return NULL;
@@ -150,4 +150,24 @@ void mapClear(Map * map) {
   size_t entrySize = map->key_size + map->value_size;
   memset(map->entries, 0, map->capacity * entrySize);
   map->count = 0;
+}
+
+void mapForEach(Map * map, void * context, void (*iterator)(void * value, void * context)) {
+  if (map->count != 0) {
+    for (int i = 0; i < map->capacity; i++) {
+      uint8_t * entry = map->entries + (i * (map->key_size + map->value_size));
+      void * key = entry;
+      void * value = entry + map->key_size;
+      char isEmpty = 1;
+      for (int j = 0; j < map->key_size; j++) {
+        if (entry[j] != 0) {
+          isEmpty = 0;
+          break;
+        }
+      }
+      if (isEmpty == 1) continue;
+
+      iterator(value, context);
+    }
+  }
 }
