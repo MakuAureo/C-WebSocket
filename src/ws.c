@@ -30,90 +30,7 @@ static int compareConnections(void const * key1_int, void const * key2_int) {
   return *(int *)key1_int == *(int *)key2_int;
 }
 
-int initSocket(WSSocket * socketInfo) {
-  memset(socketInfo, 0, sizeof(WSSocket));
-
-  if ((socketInfo->socketFD = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)) == -1) {
-    printf("Could not start a new socket: %s\n", strerror(errno));
-    return -1;
-  }
-
-  if ((socketInfo->socketEventPoll = epoll_create(8)) == -1) {
-    printf("Could not create event poll for new socket: %s\n", strerror(errno));
-    goto closeSocket;
-  }
-
-  if (setsockopt(socketInfo->socketFD, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &(socketInfo->socketOpts), sizeof(socketInfo->socketOpts)) == -1) {
-    printf("Could not set socket options for new socket: %s\n", strerror(errno));
-    goto closeSocket;
-  }
-
-  initMap(&(socketInfo->connections), sizeof(int), sizeof(WSConnection), compareConnections);
-
-  struct epoll_event socketEvent = {
-    .data.fd = socketInfo->socketFD,
-    .events = EPOLLIN
-  };
-  if (epoll_ctl(socketInfo->socketEventPoll, EPOLL_CTL_ADD, socketInfo->socketFD, &socketEvent) == -1) {
-    printf("Could not track event for new socket: %s\n", strerror(errno));
-    goto closeSocket;
-  }
-
-  return 0;
-
-  closeSocket:
-    closeSocket(socketInfo);
-    return -1;
-}
-
-int bindSocket(WSSocket * socketInfo, unsigned int const port) {
-  socklen_t addrLen = sizeof(struct sockaddr_in);
-
-  memset(&(socketInfo->addrInfo), 0, addrLen);
-  socketInfo->addrInfo.sin_family = AF_INET;
-  socketInfo->addrInfo.sin_port = htons(port);
-  socketInfo->addrInfo.sin_addr.s_addr = INADDR_ANY;
-
-  if (bind(socketInfo->socketFD, (struct sockaddr *)&(socketInfo->addrInfo), addrLen) == -1) {
-    printf("Could not bind new socket to port (%d): %s\n", port, strerror(errno));
-    goto closeSocket;
-  }
-
-  if (listen(socketInfo->socketFD, SOCKET_BACKLOG) == -1) {
-    printf("Could not start listening on new socket: %s\n", strerror(errno));
-    goto closeSocket;
-  }
-
-  return 0;
-
-  closeSocket:
-    closeSocket(socketInfo);
-    return -1;
-}
-
-void closeSocket(WSSocket * socketInfo) {
-  if (socketInfo->connections.count != 0) {
-    for (int i = 0; i < socketInfo->connections.capacity; i++) {
-      uint8_t *entry = socketInfo->connections.entries + (i * (socketInfo->connections.key_size + socketInfo->connections.value_size));
-      void *key = entry;
-      char isEmpty = 1;
-      for (int j = 0; j < socketInfo->connections.key_size; j++) {
-        if (entry[j] != 0) {
-          isEmpty = 0;
-          break;
-        }
-      }
-      if (isEmpty == 1) continue;
-      freeConnectionResources(socketInfo, mapGet(&(socketInfo->connections), key));
-    }
-  }
-  freeMap(&(socketInfo->connections));
-  close(socketInfo->socketFD);
-  memset(socketInfo, 0, sizeof(WSSocket));
-  socketInfo = NULL;
-}
-
-int acceptNewConnection(WSSocket * const socketInfo, WSConnection * const client) {
+static int acceptNewConnection(WSSocket * const socketInfo, WSConnection * const client) {
   socklen_t addrLen = sizeof(struct sockaddr_in);
 
   memset(client, 0, sizeof(WSConnection));
@@ -142,7 +59,7 @@ int acceptNewConnection(WSSocket * const socketInfo, WSConnection * const client
   return 0;
 }
 
-void freeConnectionResources(WSSocket * const socketInfo, WSConnection * const client) {
+static void freeConnectionResources(WSSocket * const socketInfo, WSConnection * const client) {
   free(client->recvBuffer);
   free(client->sendBuffer);
   free(client->connectionPath);
@@ -151,7 +68,7 @@ void freeConnectionResources(WSSocket * const socketInfo, WSConnection * const c
   mapRemove(&(socketInfo->connections), &(client->socketFD));
 }
 
-int performHandshake(WSSocket * const socketInfo, WSConnection * const client) {
+static int performHandshake(WSSocket * const socketInfo, WSConnection * const client) {
   char addr[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &(client->addrInfo.sin_addr), addr, INET_ADDRSTRLEN);
   socklen_t addrLen = sizeof(struct sockaddr_in);
@@ -218,7 +135,7 @@ int performHandshake(WSSocket * const socketInfo, WSConnection * const client) {
     return -1;
 }
 
-int receiveDataFrom(WSSocket * const socketInfo, WSConnection * const client) {
+static int receiveDataFrom(WSSocket * const socketInfo, WSConnection * const client) {
   char addr[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &(client->addrInfo.sin_addr), addr, INET_ADDRSTRLEN);
   socklen_t addrLen = sizeof(struct sockaddr_in);
@@ -304,7 +221,7 @@ int receiveDataFrom(WSSocket * const socketInfo, WSConnection * const client) {
     return ntohs(closeCode);
 }
 
-int sendDataTo(WSConnection const * const client, char const * buffer, size_t size) {
+static int sendDataTo(WSConnection const * const client, char const * buffer, size_t size) {
   if (size == 0)
     return 0;
 
@@ -335,7 +252,91 @@ int sendDataTo(WSConnection const * const client, char const * buffer, size_t si
   return size;
 }
 
-void eventLoop(WSSocket * const socketInfo, size_t (*dataHandler)(WSConnection const * const client, char const * const incData, char ** const outData)) {
+
+int initSocket(WSSocket * socketInfo) {
+  memset(socketInfo, 0, sizeof(WSSocket));
+
+  if ((socketInfo->socketFD = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)) == -1) {
+    printf("Could not start a new socket: %s\n", strerror(errno));
+    return -1;
+  }
+
+  if ((socketInfo->socketEventPoll = epoll_create(8)) == -1) {
+    printf("Could not create event poll for new socket: %s\n", strerror(errno));
+    goto closeSocket;
+  }
+
+  if (setsockopt(socketInfo->socketFD, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &(socketInfo->socketOpts), sizeof(socketInfo->socketOpts)) == -1) {
+    printf("Could not set socket options for new socket: %s\n", strerror(errno));
+    goto closeSocket;
+  }
+
+  initMap(&(socketInfo->connections), sizeof(int), sizeof(WSConnection), compareConnections);
+
+  struct epoll_event socketEvent = {
+    .data.fd = socketInfo->socketFD,
+    .events = EPOLLIN
+  };
+  if (epoll_ctl(socketInfo->socketEventPoll, EPOLL_CTL_ADD, socketInfo->socketFD, &socketEvent) == -1) {
+    printf("Could not track event for new socket: %s\n", strerror(errno));
+    goto closeSocket;
+  }
+
+  return 0;
+
+  closeSocket:
+    closeSocket(socketInfo);
+    return -1;
+}
+
+int bindSocket(WSSocket * socketInfo, unsigned int const port) {
+  socklen_t addrLen = sizeof(struct sockaddr_in);
+
+  memset(&(socketInfo->addrInfo), 0, addrLen);
+  socketInfo->addrInfo.sin_family = AF_INET;
+  socketInfo->addrInfo.sin_port = htons(port);
+  socketInfo->addrInfo.sin_addr.s_addr = INADDR_ANY;
+
+  if (bind(socketInfo->socketFD, (struct sockaddr *)&(socketInfo->addrInfo), addrLen) == -1) {
+    printf("Could not bind new socket to port (%d): %s\n", port, strerror(errno));
+    goto closeSocket;
+  }
+
+  if (listen(socketInfo->socketFD, SOCKET_BACKLOG) == -1) {
+    printf("Could not start listening on new socket: %s\n", strerror(errno));
+    goto closeSocket;
+  }
+
+  return 0;
+
+  closeSocket:
+    closeSocket(socketInfo);
+    return -1;
+}
+
+void closeSocket(WSSocket * socketInfo) {
+  if (socketInfo->connections.count != 0) {
+    for (int i = 0; i < socketInfo->connections.capacity; i++) {
+      uint8_t *entry = socketInfo->connections.entries + (i * (socketInfo->connections.key_size + socketInfo->connections.value_size));
+      void *key = entry;
+      char isEmpty = 1;
+      for (int j = 0; j < socketInfo->connections.key_size; j++) {
+        if (entry[j] != 0) {
+          isEmpty = 0;
+          break;
+        }
+      }
+      if (isEmpty == 1) continue;
+      freeConnectionResources(socketInfo, mapGet(&(socketInfo->connections), key));
+    }
+  }
+  freeMap(&(socketInfo->connections));
+  close(socketInfo->socketFD);
+  memset(socketInfo, 0, sizeof(WSSocket));
+  socketInfo = NULL;
+}
+
+void eventLoop(WSSocket * const socketInfo, void (*onConnected)(WSConnection const * const client), void (*onHandshake)(WSConnection const * const client), size_t (*onMessage)(WSConnection const * const client, char const * const incData, char ** const outData)) {
   struct epoll_event eventsTriggered[MAX_EVENTS_PER_LOOP];
   for (;;) {
     int events = epoll_wait(socketInfo->socketEventPoll, eventsTriggered, MAX_EVENTS_PER_LOOP, -1);
@@ -343,6 +344,7 @@ void eventLoop(WSSocket * const socketInfo, size_t (*dataHandler)(WSConnection c
       if (eventsTriggered[i].data.fd == socketInfo->socketFD) {
         WSConnection client;
         acceptNewConnection(socketInfo, &client);
+        onConnected(mapGet(&(socketInfo->connections), &(client.socketFD)));
       } else {
         WSConnection * const connection = mapGet(&(socketInfo->connections), &(eventsTriggered[i].data.fd));
         if (connection == NULL) {
@@ -353,11 +355,12 @@ void eventLoop(WSSocket * const socketInfo, size_t (*dataHandler)(WSConnection c
           if (performHandshake(socketInfo, connection) == -1) {
             continue;
           }
+          onHandshake(connection);
         } else {
           if (receiveDataFrom(socketInfo, connection) > 0) {
             continue;
           }
-          size_t size = dataHandler(connection, connection->recvBuffer, &(connection->sendBuffer));
+          size_t size = onMessage(connection, connection->recvBuffer, &(connection->sendBuffer));
           sendDataTo(connection, connection->sendBuffer, size);
         }
       }

@@ -10,6 +10,8 @@
 #define PORT 21455
 
 void sigintHandler(int sig);
+void acceptNewClient(WSConnection const * const client);
+void handshakeNewClient(WSConnection const * const client);
 size_t processClientMessage(WSConnection const * const client, char const * const incData, char ** outData);
 
 WSSocket socketInfo;
@@ -25,7 +27,7 @@ int main(int argc, char **argv) {
 
   signal(SIGINT, sigintHandler);
 
-  eventLoop(&socketInfo, processClientMessage);
+  eventLoop(&socketInfo, acceptNewClient, handshakeNewClient, processClientMessage);
 }
 
 void sigintHandler(int sig) {
@@ -33,6 +35,14 @@ void sigintHandler(int sig) {
   write(STDOUT_FILENO, msg, strlen(msg));
   closeSocket(&socketInfo);
   exit(EXIT_SUCCESS);
+}
+
+void acceptNewClient(WSConnection const * const client) {
+  return;
+}
+
+void handshakeNewClient(WSConnection const * const client) {
+  return;
 }
 
 size_t processClientMessage(WSConnection const * const client, char const * const incData, char ** outData) {
