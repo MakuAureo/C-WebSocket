@@ -5,5 +5,6 @@ This repository was made over a week because I wanted to learn both how WebSocke
 `gcc src/*.c -Iinclude -lssl -lcrypto`
 
 # Future plans
-- Add more options for injecting behavior in the event loop
+- ~Add more options for injecting behavior in the event loop~
 - Add multi-threading with a accept and worker threads
+- Add option to handle connection paths with different onHandshake and onConnect callbacks

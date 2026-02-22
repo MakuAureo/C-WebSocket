@@ -152,7 +152,7 @@ void mapClear(Map * map) {
   map->count = 0;
 }
 
-void mapForEach(Map * map, void * context, void (*iterator)(void * value, void * context)) {
+void mapForEach(Map * map, void * context, void (*func)(void * value, void * context)) {
   if (map->count != 0) {
     for (int i = 0; i < map->capacity; i++) {
       uint8_t * entry = map->entries + (i * (map->key_size + map->value_size));
@@ -167,7 +167,7 @@ void mapForEach(Map * map, void * context, void (*iterator)(void * value, void *
       }
       if (isEmpty == 1) continue;
 
-      iterator(value, context);
+      func(value, context);
     }
   }
 }

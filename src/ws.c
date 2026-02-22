@@ -1,29 +1,29 @@
 #define _GNU_SOURCE
+#include <sys/socket.h>
 
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <arpa/inet.h>
 #include <openssl/sha.h>
 #include <sys/epoll.h>
 #include <unistd.h>
 
 #include <base64.h>
-#include <ws.h>
 #include <hashmap.h>
+#include <ws.h>
 
-#define BUFFER_SML 128
-#define BUFFER_BIG 1024
+#define WS_BUFFER_SML 128
+#define WS_BUFFER_BIG 1024
 #define WS_SPECIAL_KEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-#define SOCKET_BACKLOG 32
-#define MAX_EVENTS_PER_LOOP 32
+#define WS_SOCKET_BACKLOG 32
+#define WS_EVENTS_PER_LOOP 32
 
-#define FIN_BIT_END 0x80
-#define OPCODE_TEXT 0x1
-#define OPCODE_CLOSE 0x8
-#define OPCODE_PING 0x9
+#define WS_FIN_BIT_END 0x80
+#define WS_OPCODE_TEXT 0x1
+#define WS_OPCODE_CLOSE 0x8
+#define WS_OPCODE_PING 0x9
 
 //This is the compare function for the connections hashmap, the keys are of type int
 static int compareConnections(void const * key1_int, void const * key2_int) {
@@ -68,14 +68,20 @@ static void freeConnectionResources(WSSocket * const socketInfo, WSConnection * 
   mapRemove(&(socketInfo->connections), &(client->socketFD));
 }
 
+static void freeConnectionResourcesForEachWrapper(void * clientPtr, void * contextPtr) {
+  WSSocket * socketInfo = (WSSocket *)contextPtr;
+  WSConnection * client = (WSConnection *)clientPtr;
+  freeConnectionResources(socketInfo, client);
+}
+
 static int performHandshake(WSSocket * const socketInfo, WSConnection * const client) {
   char addr[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &(client->addrInfo.sin_addr), addr, INET_ADDRSTRLEN);
   socklen_t addrLen = sizeof(struct sockaddr_in);
 
-  char recvBuf[BUFFER_BIG];
+  char recvBuf[WS_BUFFER_BIG];
   int recvSize;
-  if ((recvSize = recvfrom(client->socketFD, recvBuf, BUFFER_BIG - 1, 0, (struct sockaddr *)&(client->addrInfo), &addrLen)) == -1) {
+  if ((recvSize = recvfrom(client->socketFD, recvBuf, WS_BUFFER_BIG - 1, 0, (struct sockaddr *)&(client->addrInfo), &addrLen)) == -1) {
     printf("(%s): Could not read message: %s\n", addr, strerror(errno));
     goto handshakeFail;
   }
@@ -92,7 +98,8 @@ static int performHandshake(WSSocket * const socketInfo, WSConnection * const cl
     goto handshakeFail;
   }
   keyStart += 19;
-  pathStart += 5;
+  pathStart += 4;
+  pathEnd--;
 
   int pathSize = pathEnd - pathStart;
   char * path = malloc((pathSize + 1) * sizeof(char));
@@ -105,14 +112,14 @@ static int performHandshake(WSSocket * const socketInfo, WSConnection * const cl
   strncpy(wsKey, keyStart, 24);
   wsKey[24] = '\0';
 
-  char appKey[BUFFER_SML];
+  char appKey[WS_BUFFER_SML];
   sprintf(appKey, "%s%s", wsKey, WS_SPECIAL_KEY);
   unsigned char sha1hash[SHA_DIGEST_LENGTH];
   SHA1((unsigned char*)appKey, strlen(appKey), sha1hash);
   size_t outLen;
 
   unsigned char * finalKey = base64_encode(sha1hash, SHA_DIGEST_LENGTH, &outLen);
-  char response[BUFFER_BIG];
+  char response[WS_BUFFER_BIG];
   sprintf(response, 
       "HTTP/1.1 101 Switching Protocols\r\n"
       "Upgrade: websocket\r\n"
@@ -126,8 +133,8 @@ static int performHandshake(WSSocket * const socketInfo, WSConnection * const cl
 
   printf("(%s): Succeful handshake on path %s\n", addr, client->connectionPath);
 
-  client->recvBuffer = malloc(BUFFER_SML);
-  client->sendBuffer = malloc(BUFFER_SML);
+  client->recvBuffer = malloc(WS_BUFFER_SML);
+  client->sendBuffer = malloc(WS_BUFFER_SML);
   return 0;
 
   handshakeFail:
@@ -148,17 +155,17 @@ static int receiveDataFrom(WSSocket * const socketInfo, WSConnection * const cli
   uint8_t opcode = dataHeader_2B[0] & 0x0F;
   uint16_t closeCode;
 
-  if (finBit != FIN_BIT_END) {
+  if (finBit != WS_FIN_BIT_END) {
     printf("(%s): Refusing to read fragmented data. Closing connection.\n", addr);
     closeCode = htons(1003);
     goto closeConnection;
   }
-  if (opcode == OPCODE_CLOSE) {
+  if (opcode == WS_OPCODE_CLOSE) {
     printf("(%s): Client asked to close connection.\n", addr);
     closeCode = htons(1000);
     goto closeConnection;
   }
-  if (opcode != OPCODE_TEXT && opcode != OPCODE_PING) {
+  if (opcode != WS_OPCODE_TEXT && opcode != WS_OPCODE_PING) {
     printf("(%s): Refusing to read non-text data. Closing connection.\n", addr);
     closeCode = htons(1003);
     goto closeConnection;
@@ -182,7 +189,7 @@ static int receiveDataFrom(WSSocket * const socketInfo, WSConnection * const cli
     payloadLen = ntohl(*(uint64_t *)extraLen);
   }
 
-  int isPing = (opcode == OPCODE_PING) ? 1 : 0;
+  int isPing = (opcode == WS_OPCODE_PING) ? 1 : 0;
   unsigned char mask_4B[4];
   recvfrom(client->socketFD, mask_4B, 4, 0, (struct sockaddr *)&(client->addrInfo), &addrLen);
 
@@ -206,6 +213,7 @@ static int receiveDataFrom(WSSocket * const socketInfo, WSConnection * const cli
     if (payloadLen > 0)
       strncpy(pong + 2, client->recvBuffer, payloadLen);
     sendto(client->socketFD, pong, payloadLen + 2, 0, (struct sockaddr *)&(client->addrInfo), addrLen);
+    printf("(%s): ping.\n", addr);
   } else {
     printf("(%s): \"%s\"\n", addr, client->recvBuffer);
   }
@@ -252,7 +260,6 @@ static int sendDataTo(WSConnection const * const client, char const * buffer, si
   return size;
 }
 
-
 int initSocket(WSSocket * socketInfo) {
   memset(socketInfo, 0, sizeof(WSSocket));
 
@@ -282,6 +289,10 @@ int initSocket(WSSocket * socketInfo) {
     goto closeSocket;
   }
 
+  //Init threads
+  for (int i = 0; i < WS_WORKER_THREADS; i++) {
+  }
+
   return 0;
 
   closeSocket:
@@ -298,12 +309,12 @@ int bindSocket(WSSocket * socketInfo, unsigned int const port) {
   socketInfo->addrInfo.sin_addr.s_addr = INADDR_ANY;
 
   if (bind(socketInfo->socketFD, (struct sockaddr *)&(socketInfo->addrInfo), addrLen) == -1) {
-    printf("Could not bind new socket to port (%d): %s\n", port, strerror(errno));
+    printf("Could not bind socket to port %d: %s\n", port, strerror(errno));
     goto closeSocket;
   }
 
-  if (listen(socketInfo->socketFD, SOCKET_BACKLOG) == -1) {
-    printf("Could not start listening on new socket: %s\n", strerror(errno));
+  if (listen(socketInfo->socketFD, WS_SOCKET_BACKLOG) == -1) {
+    printf("Could not start listening on port %d: %s\n", port, strerror(errno));
     goto closeSocket;
   }
 
@@ -314,29 +325,23 @@ int bindSocket(WSSocket * socketInfo, unsigned int const port) {
     return -1;
 }
 
-static void freeConnectionResourcesIteratorWrapper(void * clientPtr, void * contextPtr) {
-  WSSocket * socketInfo = (WSSocket *)contextPtr;
-  WSConnection * client = (WSConnection *)clientPtr;
-  freeConnectionResources(socketInfo, client);
-}
-
 void closeSocket(WSSocket * socketInfo) {
-  mapForEach(&(socketInfo->connections), socketInfo, freeConnectionResourcesIteratorWrapper);
+  mapForEach(&(socketInfo->connections), socketInfo, freeConnectionResourcesForEachWrapper);
   freeMap(&(socketInfo->connections));
   close(socketInfo->socketFD);
   memset(socketInfo, 0, sizeof(WSSocket));
   socketInfo = NULL;
 }
 
-void eventLoop(WSSocket * const socketInfo, void (*onConnected)(WSConnection const * const client), void (*onHandshake)(WSConnection const * const client), size_t (*onMessage)(WSConnection const * const client, char const * const incData, char ** const outData)) {
-  struct epoll_event eventsTriggered[MAX_EVENTS_PER_LOOP];
+void startEventLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection const * const client), void (*onHandshake)(WSConnection const * const client), size_t (*onMessage)(WSConnection const * const client, char const * const incData, char ** const outData)) {
+  struct epoll_event eventsTriggered[WS_EVENTS_PER_LOOP];
   for (;;) {
-    int events = epoll_wait(socketInfo->socketEventPoll, eventsTriggered, MAX_EVENTS_PER_LOOP, -1);
+    int events = epoll_wait(socketInfo->socketEventPoll, eventsTriggered, WS_EVENTS_PER_LOOP, -1);
     for (int i = 0; i < events; i++) {
       if (eventsTriggered[i].data.fd == socketInfo->socketFD) {
         WSConnection client;
         acceptNewConnection(socketInfo, &client);
-        onConnected(mapGet(&(socketInfo->connections), &(client.socketFD)));
+        onConnect(mapGet(&(socketInfo->connections), &(client.socketFD)));
       } else {
         WSConnection * const connection = mapGet(&(socketInfo->connections), &(eventsTriggered[i].data.fd));
         if (connection == NULL) {

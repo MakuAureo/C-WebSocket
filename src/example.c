@@ -28,7 +28,7 @@ int main(int argc, char **argv) {
   signal(SIGINT, sigintHandler);
   printf("(Server): Started and bound socket to port: %d\n", PORT);
 
-  eventLoop(&socketInfo, onConnect, onHandshake, onMessage);
+  startEventLoop(&socketInfo, onConnect, onHandshake, onMessage);
 }
 
 void sigintHandler(int sig) {
