@@ -13,6 +13,7 @@ void sigintHandler(int sig);
 void onConnect(WSConnection const * const client);
 void onHandshake(WSConnection const * const client);
 size_t onMessage(WSConnection const * const client, char const * const incData, char ** outData);
+void onDisconnect(WSConnection const * const client);
 
 WSSocket socketInfo;
 
@@ -28,7 +29,7 @@ int main(int argc, char **argv) {
   signal(SIGINT, sigintHandler);
   printf("(Server): Started and bound socket to port: %d\n", PORT);
 
-  startEventLoop(&socketInfo, onConnect, onHandshake, onMessage);
+  startEventLoop(&socketInfo, onConnect);
 }
 
 void sigintHandler(int sig) {
@@ -56,4 +57,8 @@ size_t onMessage(WSConnection const * const client, char const * const incData, 
   strcpy(data, testString);
   *outData = data;
   return size + 1;
+}
+
+void onDisconnect(WSConnection const * const client) {
+  return;
 }

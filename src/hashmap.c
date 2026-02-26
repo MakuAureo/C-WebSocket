@@ -156,7 +156,6 @@ void mapForEach(Map * map, void * context, void (*func)(void * value, void * con
   if (map->count != 0) {
     for (int i = 0; i < map->capacity; i++) {
       uint8_t * entry = map->entries + (i * (map->key_size + map->value_size));
-      void * key = entry;
       void * value = entry + map->key_size;
       char isEmpty = 1;
       for (int j = 0; j < map->key_size; j++) {

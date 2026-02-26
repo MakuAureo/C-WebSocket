@@ -30,6 +30,17 @@ static int compareConnections(void const * key1_int, void const * key2_int) {
   return *(int *)key1_int == *(int *)key2_int;
 }
 
+static int comparePaths(void const * key1_str, void const * key2_str) {
+  int isEqual = 1;
+  for (size_t i = 0;((char *)key1_str)[i] != '\0' && ((char *)key2_str)[i] != '\0'; i++)
+    if (((char *)key1_str)[i] != ((char *)key2_str)[i]) {
+      isEqual = 0;
+      break;
+    }
+
+  return isEqual;
+}
+
 static int acceptNewConnection(WSSocket * const socketInfo, WSConnection * const client) {
   socklen_t addrLen = sizeof(struct sockaddr_in);
 
@@ -74,50 +85,144 @@ static void freeConnectionResourcesForEachWrapper(void * clientPtr, void * conte
   freeConnectionResources(socketInfo, client);
 }
 
+static int isHTTPUpgrade(char const * const request, ssize_t length, char * path, char * key) {
+  enum HTTPCHECK {
+    GET,
+    PATH,
+    HTTP,
+    KEY,
+  };
+  int foundConnection = 0;
+  int foundUpgrade = 0;
+  int foundKey = 0;
+  enum HTTPCHECK state = GET;
+  for (char const * curr = request;;) {
+    switch (state) {
+      case GET:;
+        char get[] = "GET";
+        for (size_t i = 0; i < 3; i++)
+          if (*(curr++) != get[i])
+            return 0;
+        
+        state = HTTP;
+        break;
+      case PATH:;
+        size_t pathLenght = 0;
+        char const * pathStart = ++curr;
+        while (*(curr++) != ' ') pathLenght++;
+
+        path = malloc((pathLenght + 1) * sizeof(char));
+        for (size_t i = 0; i < pathLenght; i++)
+          path[i] = pathStart[i];
+        path[pathLenght] = '\0';
+
+        state = HTTP;
+        break;
+      case HTTP:;
+        char http[] = "HTTP/1.1";
+        for (size_t i = 0; i < 8; i++)
+          if (*(curr++) != http[i]) {
+            free(path);
+            path = NULL;
+            return 0;
+          }
+
+        state = KEY;
+        break;
+      case KEY:;
+        char connection[] = "Connection: Upgrade";
+        char upgrade[] = "Upgrade: websocket";
+        char wskey[] = "Sec-WebSocket-Key";
+
+        for (;curr < request + length; curr++) {
+          if (!foundConnection && *curr == connection[0]) {
+            size_t i = 0;
+            for (; i < sizeof(connection); i++) {
+             if (curr[i] == connection[i])
+               continue;
+             break;
+            }
+            if (i == sizeof(connection)) foundConnection = 1;
+          }
+          if (!foundUpgrade && *curr == upgrade[0]) {
+            size_t i = 0;
+            for (; i < sizeof(upgrade); i++) {
+              if (curr[i] == upgrade[i])
+                continue;
+              break;
+            }
+            if (i == sizeof(upgrade)) foundUpgrade = 1;
+          }
+          if (!foundKey && *curr == wskey[0]) {
+            size_t i = 0;
+            for (; i < sizeof(wskey); i++) {
+              if (curr[i] == wskey[i])
+                continue;
+              break;
+            }
+            if (i == sizeof(wskey)) {
+              foundKey = 1;
+              size_t keyLength = 24;
+              char const * keyStart = curr + i + 1;
+
+              key = malloc((keyLength + 1) * sizeof(char));
+              for (size_t j = 0; j < keyLength; j++)
+                key[j] = keyStart[j];
+              key[keyLength] = '\0';
+            }
+          }
+        }
+        break;
+    }
+  }
+
+  if (foundConnection && foundUpgrade && foundKey)
+    return 1;
+  else {
+    free(path);
+    free(key);
+    path = NULL;
+    key = NULL;
+    return 0;
+  }
+}
+
 static int performHandshake(WSSocket * const socketInfo, WSConnection * const client) {
   char addr[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &(client->addrInfo.sin_addr), addr, INET_ADDRSTRLEN);
   socklen_t addrLen = sizeof(struct sockaddr_in);
 
   char recvBuf[WS_BUFFER_BIG];
-  int recvSize;
+  ssize_t recvSize;
   if ((recvSize = recvfrom(client->socketFD, recvBuf, WS_BUFFER_BIG - 1, 0, (struct sockaddr *)&(client->addrInfo), &addrLen)) == -1) {
     printf("(%s): Could not read message: %s\n", addr, strerror(errno));
     goto handshakeFail;
   }
   recvBuf[recvSize] = '\0';
 
-  char * keyStart;
-  char * pathStart, * pathEnd;
-  if ((pathStart = strstr(recvBuf, "GET")) == NULL || 
-      (pathEnd = strstr(recvBuf, "HTTP/1.1")) == NULL || 
-      strstr(recvBuf, "Connection: Upgrade") == NULL || 
-      strstr(recvBuf, "Upgrade: websocket") == NULL ||
-      (keyStart = strstr(recvBuf, "Sec-WebSocket-Key")) == NULL) {
+  char * key = NULL;
+  char * path = NULL;
+  if (!isHTTPUpgrade(recvBuf, recvSize, key, path)) {
     printf("(%s): Invalid websocket upgrade request.\n", addr);
     goto handshakeFail;
   }
-  keyStart += 19;
-  pathStart += 4;
-  pathEnd--;
-
-  int pathSize = pathEnd - pathStart;
-  char * path = malloc((pathSize + 1) * sizeof(char));
-  strncpy(path, pathStart, pathSize);
-  path[pathSize] = '\0';
-  client->connectionPath = path;
-
-  char wsKey[25];
-  memset(wsKey, 0, 25 * sizeof(char));
-  strncpy(wsKey, keyStart, 24);
-  wsKey[24] = '\0';
+  WSPathHandler * pathHandler;
+  if ((pathHandler = mapGet(&(socketInfo->paths), path)) == NULL) {
+    printf("(%s): Invalid websocket path.\n", addr);
+    free(path);
+    free(key);
+    goto handshakeFail;
+  }
+  free(path);
+  client->pathHanlder = pathHandler;
 
   char appKey[WS_BUFFER_SML];
-  sprintf(appKey, "%s%s", wsKey, WS_SPECIAL_KEY);
+  sprintf(appKey, "%s%s", key, WS_SPECIAL_KEY);
   unsigned char sha1hash[SHA_DIGEST_LENGTH];
   SHA1((unsigned char*)appKey, strlen(appKey), sha1hash);
-  size_t outLen;
+  free(key);
 
+  size_t outLen;
   unsigned char * finalKey = base64_encode(sha1hash, SHA_DIGEST_LENGTH, &outLen);
   char response[WS_BUFFER_BIG];
   sprintf(response, 
@@ -279,6 +384,7 @@ int initSocket(WSSocket * socketInfo) {
   }
 
   initMap(&(socketInfo->connections), sizeof(int), sizeof(WSConnection), compareConnections);
+  initMap(&(socketInfo->paths), sizeof(char *), sizeof(WSPathHandler), comparePaths);
 
   struct epoll_event socketEvent = {
     .data.fd = socketInfo->socketFD,
@@ -287,10 +393,6 @@ int initSocket(WSSocket * socketInfo) {
   if (epoll_ctl(socketInfo->socketEventPoll, EPOLL_CTL_ADD, socketInfo->socketFD, &socketEvent) == -1) {
     printf("Could not track event for new socket: %s\n", strerror(errno));
     goto closeSocket;
-  }
-
-  //Init threads
-  for (int i = 0; i < WS_WORKER_THREADS; i++) {
   }
 
   return 0;
@@ -333,7 +435,20 @@ void closeSocket(WSSocket * socketInfo) {
   socketInfo = NULL;
 }
 
-void startEventLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection const * const client), void (*onHandshake)(WSConnection const * const client), size_t (*onMessage)(WSConnection const * const client, char const * const incData, char ** const outData)) {
+void addValidPath(WSSocket * const socketInfo, char * const path,
+    void (*onHandshake)(WSConnection const * const client),
+    void (*onDisconnect)(struct WSConnection const * const client),
+    size_t (*onMessage)(WSConnection const * const client, char const * const incData, char ** const outData)) {
+  WSPathHandler pathHandler = {
+    .onHandshake = onHandshake,
+    .onDisconnect = onDisconnect,
+    .onMessage = onMessage
+  };
+  // Prob look into this cuz i don't think it works!
+  mapPut(&(socketInfo->paths), path, &pathHandler);
+}
+
+void startEventLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection const * const client)) {
   struct epoll_event eventsTriggered[WS_EVENTS_PER_LOOP];
   for (;;) {
     int events = epoll_wait(socketInfo->socketEventPoll, eventsTriggered, WS_EVENTS_PER_LOOP, -1);
@@ -352,12 +467,13 @@ void startEventLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection 
           if (performHandshake(socketInfo, connection) == -1) {
             continue;
           }
-          onHandshake(connection);
+          connection->pathHanlder->onHandshake(connection);
         } else {
           if (receiveDataFrom(socketInfo, connection) > 0) {
+            connection->pathHanlder->onDisconnect(connection);
             continue;
           }
-          size_t size = onMessage(connection, connection->recvBuffer, &(connection->sendBuffer));
+          size_t size = connection->pathHanlder->onMessage(connection, connection->recvBuffer, &(connection->sendBuffer));
           sendDataTo(connection, connection->sendBuffer, size);
         }
       }
