@@ -79,7 +79,8 @@ static void freeConnectionResources(WSSocket * const socketInfo, WSConnection * 
   mapRemove(&(socketInfo->connections), &(client->socketFD));
 }
 
-static void freeConnectionResourcesForEachWrapper(void * clientPtr, void * contextPtr) {
+static void freeConnectionResourcesForEachWrapper(void * clientFD, void * clientPtr, void * contextPtr) {
+  (void)clientFD; //unused
   WSSocket * socketInfo = (WSSocket *)contextPtr;
   WSConnection * client = (WSConnection *)clientPtr;
   freeConnectionResources(socketInfo, client);
@@ -435,7 +436,7 @@ void closeSocket(WSSocket * socketInfo) {
   socketInfo = NULL;
 }
 
-void addValidPath(WSSocket * const socketInfo, char * const path,
+void addValidPath(WSSocket * const socketInfo, char const * const regexPath,
     void (*onHandshake)(WSConnection const * const client),
     void (*onDisconnect)(struct WSConnection const * const client),
     size_t (*onMessage)(WSConnection const * const client, char const * const incData, char ** const outData)) {
@@ -444,7 +445,7 @@ void addValidPath(WSSocket * const socketInfo, char * const path,
     .onDisconnect = onDisconnect,
     .onMessage = onMessage
   };
-  // Prob look into this cuz i don't think it works!
+  char * path = strdup(regexPath);
   mapPut(&(socketInfo->paths), path, &pathHandler);
 }
 
@@ -464,9 +465,8 @@ void startEventLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection 
           continue;
         }
         if (connection->needsHandshake) {
-          if (performHandshake(socketInfo, connection) == -1) {
+          if (performHandshake(socketInfo, connection) == -1)
             continue;
-          }
           connection->pathHanlder->onHandshake(connection);
         } else {
           if (receiveDataFrom(socketInfo, connection) > 0) {
