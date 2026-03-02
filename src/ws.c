@@ -9,9 +9,11 @@
 #include <openssl/sha.h>
 #include <sys/epoll.h>
 #include <unistd.h>
+#include <regex.h>
 
 #include <base64.h>
 #include <hashmap.h>
+#include <dstring.h>
 #include <ws.h>
 
 #define WS_BUFFER_SML 128
@@ -30,15 +32,12 @@ static int compareConnections(void const * key1_int, void const * key2_int) {
   return *(int *)key1_int == *(int *)key2_int;
 }
 
-static int comparePaths(void const * key1_str, void const * key2_str) {
-  int isEqual = 1;
-  for (size_t i = 0;((char *)key1_str)[i] != '\0' && ((char *)key2_str)[i] != '\0'; i++)
-    if (((char *)key1_str)[i] != ((char *)key2_str)[i]) {
-      isEqual = 0;
-      break;
-    }
-
-  return isEqual;
+static int comparePathsRegex(void const * key1_dstr, void const * key2_dstr) {
+  regex_t regex;
+  regcomp(&regex, ((DString const *)key1_dstr)->string, REG_EXTENDED | REG_NEWLINE); //All paths in the map are valid regex because they have been tested before being added
+  int match = (regexec(&regex, ((DString const*)key2_dstr)->string, 0, NULL, 0) == 0);
+  regfree(&regex);
+  return match;
 }
 
 static int acceptNewConnection(WSSocket * const socketInfo, WSConnection * const client) {
@@ -79,14 +78,21 @@ static void freeConnectionResources(WSSocket * const socketInfo, WSConnection * 
   mapRemove(&(socketInfo->connections), &(client->socketFD));
 }
 
-static void freeConnectionResourcesForEachWrapper(void * clientFD, void * clientPtr, void * contextPtr) {
-  (void)clientFD; //unused
+static void freeConnectionResourcesForEachWrapper(void * clientFDPtr, void * wsConnectionPtr, void * contextPtr) {
+  (void)clientFDPtr; //unused
+  
   WSSocket * socketInfo = (WSSocket *)contextPtr;
-  WSConnection * client = (WSConnection *)clientPtr;
+  WSConnection * client = (WSConnection *)wsConnectionPtr;
   freeConnectionResources(socketInfo, client);
 }
 
-static int isHTTPUpgrade(char const * const request, ssize_t length, char * path, char * key) {
+static void freeConnectionPathForEachWrapper(void * pathPtr, void * pathHandlerPtr, void * contextPtr) {
+  (void)pathHandlerPtr; //unused
+  (void)contextPtr; //unused
+  dstrfree(pathPtr);
+}
+
+static int isHTTPUpgrade(char const * const request, ssize_t length, char ** path, char ** key) {
   enum HTTPCHECK {
     GET,
     PATH,
@@ -105,17 +111,16 @@ static int isHTTPUpgrade(char const * const request, ssize_t length, char * path
           if (*(curr++) != get[i])
             return 0;
         
-        state = HTTP;
+        state = PATH;
         break;
       case PATH:;
         size_t pathLenght = 0;
         char const * pathStart = ++curr;
         while (*(curr++) != ' ') pathLenght++;
 
-        path = malloc((pathLenght + 1) * sizeof(char));
-        for (size_t i = 0; i < pathLenght; i++)
-          path[i] = pathStart[i];
-        path[pathLenght] = '\0';
+        *path = malloc((pathLenght + 1) * sizeof(char));
+        memcpy(*path, pathStart, pathLenght);
+        (*path)[pathLenght] = '\0';
 
         state = HTTP;
         break;
@@ -143,7 +148,10 @@ static int isHTTPUpgrade(char const * const request, ssize_t length, char * path
                continue;
              break;
             }
-            if (i == sizeof(connection)) foundConnection = 1;
+            if (i == sizeof(connection) - 1) {
+              foundConnection = 1;
+              curr += i;
+            }
           }
           if (!foundUpgrade && *curr == upgrade[0]) {
             size_t i = 0;
@@ -152,7 +160,10 @@ static int isHTTPUpgrade(char const * const request, ssize_t length, char * path
                 continue;
               break;
             }
-            if (i == sizeof(upgrade)) foundUpgrade = 1;
+            if (i == sizeof(upgrade) - 1) {
+              foundUpgrade = 1;
+              curr += i;
+            }
           }
           if (!foundKey && *curr == wskey[0]) {
             size_t i = 0;
@@ -161,29 +172,30 @@ static int isHTTPUpgrade(char const * const request, ssize_t length, char * path
                 continue;
               break;
             }
-            if (i == sizeof(wskey)) {
+            if (i == sizeof(wskey) - 1) {
               foundKey = 1;
               size_t keyLength = 24;
-              char const * keyStart = curr + i + 1;
+              char const * keyStart = curr + i + 2;
 
-              key = malloc((keyLength + 1) * sizeof(char));
-              for (size_t j = 0; j < keyLength; j++)
-                key[j] = keyStart[j];
-              key[keyLength] = '\0';
+              *key = malloc((keyLength + 1) * sizeof(char));
+              memcpy(*key, keyStart, keyLength);
+              (*key)[keyLength] = '\0';
+              curr += i;
             }
           }
         }
-        break;
+        goto exit;
     }
   }
 
+  exit:
   if (foundConnection && foundUpgrade && foundKey)
     return 1;
   else {
-    free(path);
-    free(key);
-    path = NULL;
-    key = NULL;
+    free(*path);
+    free(*key);
+    *path = NULL;
+    *key = NULL;
     return 0;
   }
 }
@@ -203,18 +215,22 @@ static int performHandshake(WSSocket * const socketInfo, WSConnection * const cl
 
   char * key = NULL;
   char * path = NULL;
-  if (!isHTTPUpgrade(recvBuf, recvSize, key, path)) {
+  if (!isHTTPUpgrade(recvBuf, recvSize, &path, &key)) {
     printf("(%s): Invalid websocket upgrade request.\n", addr);
     goto handshakeFail;
   }
+  DString pathDString;
+  dstrinit(&pathDString, path, strlen(path));
+
   WSPathHandler * pathHandler;
-  if ((pathHandler = mapGet(&(socketInfo->paths), path)) == NULL) {
-    printf("(%s): Invalid websocket path.\n", addr);
+  if ((pathHandler = mapGet(&(socketInfo->paths), &pathDString)) == NULL) {
+    printf("(%s): Invalid websocket path (%s).\n", addr, path);
     free(path);
     free(key);
     goto handshakeFail;
   }
   free(path);
+  dstrfree(&pathDString);
   client->pathHanlder = pathHandler;
 
   char appKey[WS_BUFFER_SML];
@@ -234,7 +250,7 @@ static int performHandshake(WSSocket * const socketInfo, WSConnection * const cl
       finalKey);
   free(finalKey);
 
-  send(client->socketFD, response, strlen(response), 0);
+  sendto(client->socketFD, response, strlen(response), 0, &(client->addrInfo), addrLen);
   client->needsHandshake = 0;
 
   printf("(%s): Succeful handshake on path %s\n", addr, client->connectionPath);
@@ -385,7 +401,7 @@ int initSocket(WSSocket * socketInfo) {
   }
 
   initMap(&(socketInfo->connections), sizeof(int), sizeof(WSConnection), compareConnections);
-  initMap(&(socketInfo->paths), sizeof(char *), sizeof(WSPathHandler), comparePaths);
+  initMap(&(socketInfo->paths), sizeof(DString), sizeof(WSPathHandler), comparePathsRegex);
 
   struct epoll_event socketEvent = {
     .data.fd = socketInfo->socketFD,
@@ -431,25 +447,41 @@ int bindSocket(WSSocket * socketInfo, unsigned int const port) {
 void closeSocket(WSSocket * socketInfo) {
   mapForEach(&(socketInfo->connections), socketInfo, freeConnectionResourcesForEachWrapper);
   freeMap(&(socketInfo->connections));
+
+  mapForEach(&(socketInfo->paths), NULL, freeConnectionPathForEachWrapper);
+  freeMap(&(socketInfo->paths));
+  
   close(socketInfo->socketFD);
+
   memset(socketInfo, 0, sizeof(WSSocket));
   socketInfo = NULL;
 }
 
-void addValidPath(WSSocket * const socketInfo, char const * const regexPath,
+int addValidPath(WSSocket * const socketInfo, char const * const regexPath,
     void (*onHandshake)(WSConnection const * const client),
-    void (*onDisconnect)(struct WSConnection const * const client),
+    void (*onDisconnect)(WSConnection const * const client),
     size_t (*onMessage)(WSConnection const * const client, char const * const incData, char ** const outData)) {
+
+  regex_t regex;
+  int rc = regcomp(&regex, regexPath, REG_EXTENDED | REG_NEWLINE);
+  regfree(&regex);
+
+  if (rc != 0)
+    return rc;
+
   WSPathHandler pathHandler = {
     .onHandshake = onHandshake,
     .onDisconnect = onDisconnect,
     .onMessage = onMessage
   };
-  char * path = strdup(regexPath);
-  mapPut(&(socketInfo->paths), path, &pathHandler);
+  DString path;
+  dstrinit(&path, regexPath, strlen(regexPath));
+  mapPut(&(socketInfo->paths), &path, &pathHandler);
+
+  return rc;
 }
 
-void startEventLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection const * const client)) {
+void runSocketLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection const * const client)) {
   struct epoll_event eventsTriggered[WS_EVENTS_PER_LOOP];
   for (;;) {
     int events = epoll_wait(socketInfo->socketEventPoll, eventsTriggered, WS_EVENTS_PER_LOOP, -1);

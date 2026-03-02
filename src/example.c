@@ -17,19 +17,24 @@ void onDisconnect(WSConnection const * const client);
 
 WSSocket socketInfo;
 
-int main(int argc, char **argv) {
-  if (initSocket(&socketInfo) == -1)
+int main(int argc, char ** argv) {
+  if (initSocket(&socketInfo) != 0)
     exit(EXIT_FAILURE);
 
-  if (bindSocket(&socketInfo, PORT) == -1) {
+  if (bindSocket(&socketInfo, PORT) != 0) {
     close(socketInfo.socketFD);
     exit(EXIT_FAILURE);
   }
 
   signal(SIGINT, sigintHandler);
-  printf("(Server): Started and bound socket to port: %d\n", PORT);
+  printf("(Server): Socket bound and listening to port: %d\n", PORT);
 
-  startEventLoop(&socketInfo, onConnect);
+  if (addValidPath(&socketInfo, "/$", onHandshake, onDisconnect, onMessage) != 0) {
+    printf("(Server): Invalid regex path\n");
+    exit(EXIT_FAILURE);
+  }
+
+  runSocketLoop(&socketInfo, onConnect);
 }
 
 void sigintHandler(int sig) {

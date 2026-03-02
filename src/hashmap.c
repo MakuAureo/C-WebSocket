@@ -54,8 +54,8 @@ static uint8_t * linearProbing(Map * map, void * entries, void * key, size_t ent
   }
 }
 
-static int resizeArray(Map * map, int grow) {
-  int newCapacity = (grow == true) ? map->capacity + MAP_GROWTH : map->capacity - MAP_GROWTH;
+static int resizeArray(Map * map) {
+  int newCapacity = map->capacity + MAP_GROWTH;
   if (newCapacity <= 0) return false;
   size_t entrySize = map->key_size + map->value_size;
 
@@ -86,7 +86,7 @@ static int resizeArray(Map * map, int grow) {
   return true;
 }
 
-void initMap(Map * map, size_t key_size, size_t value_size, int (*cmp)(void const * key1, void const  * key2)) {
+void initMap(Map * map, size_t key_size, size_t value_size, int (*cmp)(void const * key1, void const * key2)) {
   map->count = 0;
   map->capacity = 0;
   map->entries = NULL;
@@ -106,9 +106,7 @@ void freeMap(Map * map) {
 
 int mapPut(Map * map, void * key, void * value) {
   if (map->count >= map->capacity * MAX_LOAD)
-    resizeArray(map, true);
-  else if (map->count < map->capacity * MIN_LOAD)
-    resizeArray(map, false);
+    resizeArray(map);
 
   uint8_t * entry = linearProbing(map, map->entries, key, (map->key_size + map->value_size), map->capacity);
 
@@ -130,7 +128,7 @@ void mapRemove(Map * map, void * key) {
   memset(entry, 0, map->key_size);
 
   // TOMBSTONE : (0000...000001)
-  // BITS :       ^key...value^
+  // BITS REP :   ^key...value^
   memset(entry + map->key_size, 0, map->value_size);
   memset(entry + map->key_size + map->value_size - 1, 1, 1);
 }
