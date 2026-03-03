@@ -1,4 +1,4 @@
-#include <dstring.h>
+#include "dstring.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -44,7 +44,8 @@ int dstrcmp(DString const * const str1, DString const * const str2) {
   if (str1->length != str2->length)
     return 0;
 
-  for (size_t i = 0; i < str1->length; i++)
+  size_t const length = str1->length;
+  for (size_t i = 0; i < length; i++)
     if (str1->string[i] != str2->string[i])
       return 0;
 

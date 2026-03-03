@@ -2,7 +2,8 @@
 #define WS_H
 
 #include <arpa/inet.h>
-#include <hashmap.h>
+
+#include "hashmap.h"
 
 typedef struct WSPathHandler WSPathHandler;
 typedef struct WSConnection WSConnection;
@@ -42,7 +43,7 @@ int bindSocket(WSSocket * socketInfo, unsigned int const port);
 void closeSocket(WSSocket * socketInfo);
 
 // Returns 0 on success, regex error code otherwise (can be passed to `regerror`)
-int addValidPath(WSSocket * const socketInfo, char const * const regexPath,
+int addValidPath(WSSocket * const socketInfo, char const * const path,
     void (*onHandshake)(WSConnection const * const client),
     void (*onDisconnect)(WSConnection const * const client),
     size_t (*onMessage)(WSConnection const * const client, char const * const incData, char ** const outData));

@@ -4,8 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <hashmap.h>
-#include <ws.h>
+#include "ws.h"
 
 #define PORT 21455
 
@@ -29,7 +28,7 @@ int main(int argc, char ** argv) {
   signal(SIGINT, sigintHandler);
   printf("(Server): Socket bound and listening to port: %d\n", PORT);
 
-  if (addValidPath(&socketInfo, "/$", onHandshake, onDisconnect, onMessage) != 0) {
+  if (addValidPath(&socketInfo, "/chat", onHandshake, onDisconnect, onMessage) != 0) {
     printf("(Server): Invalid regex path\n");
     exit(EXIT_FAILURE);
   }

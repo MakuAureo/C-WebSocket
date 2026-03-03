@@ -9,18 +9,17 @@
 #include <openssl/sha.h>
 #include <sys/epoll.h>
 #include <unistd.h>
-#include <regex.h>
 
-#include <base64.h>
-#include <hashmap.h>
-#include <dstring.h>
-#include <ws.h>
+#include "base64.h"
+#include "hashmap.h"
+#include "dstring.h"
+#include "ws.h"
 
 #define WS_BUFFER_SML 128
 #define WS_BUFFER_BIG 1024
-#define WS_SPECIAL_KEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 #define WS_SOCKET_BACKLOG 32
 #define WS_EVENTS_PER_LOOP 32
+#define WS_SPECIAL_KEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 #define WS_FIN_BIT_END 0x80
 #define WS_OPCODE_TEXT 0x1
@@ -32,12 +31,8 @@ static int compareConnections(void const * key1_int, void const * key2_int) {
   return *(int *)key1_int == *(int *)key2_int;
 }
 
-static int comparePathsRegex(void const * key1_dstr, void const * key2_dstr) {
-  regex_t regex;
-  regcomp(&regex, ((DString const *)key1_dstr)->string, REG_EXTENDED | REG_NEWLINE); //All paths in the map are valid regex because they have been tested before being added
-  int match = (regexec(&regex, ((DString const*)key2_dstr)->string, 0, NULL, 0) == 0);
-  regfree(&regex);
-  return match;
+static int comparePaths(void const * key1_dstr, void const * key2_dstr) {
+  return dstrcmp((DString const *)key1_dstr, (DString const *)key2_dstr);
 }
 
 static int acceptNewConnection(WSSocket * const socketInfo, WSConnection * const client) {
@@ -362,8 +357,8 @@ static int sendDataTo(WSConnection const * const client, char const * buffer, si
   if (size > 65535)
     headerSize += 6;
   
-  char message[size + headerSize];
-  message[0] = 0x81;
+  unsigned char message[size + headerSize];
+  message[0] = WS_FIN_BIT_END | WS_OPCODE_TEXT;
   if (headerSize == 2)
     message[1] = (char)size;
   else if (headerSize == 4) {
@@ -377,7 +372,7 @@ static int sendDataTo(WSConnection const * const client, char const * buffer, si
     memcpy(message + 2, &netSize, 8 * sizeof(char));
   }
 
-  strncpy(message + headerSize, buffer, size);
+  memcpy(message + headerSize, buffer, size);
   sendto(client->socketFD, message, size + headerSize, 0, &(client->addrInfo), addrLen);
   return size;
 }
@@ -401,7 +396,7 @@ int initSocket(WSSocket * socketInfo) {
   }
 
   initMap(&(socketInfo->connections), sizeof(int), sizeof(WSConnection), compareConnections);
-  initMap(&(socketInfo->paths), sizeof(DString), sizeof(WSPathHandler), comparePathsRegex);
+  initMap(&(socketInfo->paths), sizeof(DString), sizeof(WSPathHandler), comparePaths);
 
   struct epoll_event socketEvent = {
     .data.fd = socketInfo->socketFD,
@@ -451,34 +446,28 @@ void closeSocket(WSSocket * socketInfo) {
   mapForEach(&(socketInfo->paths), NULL, freeConnectionPathForEachWrapper);
   freeMap(&(socketInfo->paths));
   
+  shutdown(socketInfo->socketFD, SHUT_RDWR);
   close(socketInfo->socketFD);
 
   memset(socketInfo, 0, sizeof(WSSocket));
   socketInfo = NULL;
 }
 
-int addValidPath(WSSocket * const socketInfo, char const * const regexPath,
+int addValidPath(WSSocket * const socketInfo, char const * const path,
     void (*onHandshake)(WSConnection const * const client),
     void (*onDisconnect)(WSConnection const * const client),
     size_t (*onMessage)(WSConnection const * const client, char const * const incData, char ** const outData)) {
-
-  regex_t regex;
-  int rc = regcomp(&regex, regexPath, REG_EXTENDED | REG_NEWLINE);
-  regfree(&regex);
-
-  if (rc != 0)
-    return rc;
-
+  if (mapGet(&(socketInfo->paths), (void*)path) != NULL)
+    return -1;
   WSPathHandler pathHandler = {
     .onHandshake = onHandshake,
     .onDisconnect = onDisconnect,
     .onMessage = onMessage
   };
-  DString path;
-  dstrinit(&path, regexPath, strlen(regexPath));
-  mapPut(&(socketInfo->paths), &path, &pathHandler);
-
-  return rc;
+  DString pathDStr;
+  dstrinit(&pathDStr, path, strlen(path));
+  mapPut(&(socketInfo->paths), &pathDStr, &pathHandler);
+  return 0;
 }
 
 void runSocketLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection const * const client)) {
