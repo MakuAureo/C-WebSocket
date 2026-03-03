@@ -4,11 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define true 1
-#define false 0
-#define MIN_LOAD 0.1
-#define MAX_LOAD 0.6
-#define MAP_GROWTH 32
+#define HM_TRUE 1
+#define HM_FALSE 0
+#define HS_MAX_LOAD 0.6
+#define HS_MAP_GROWTH 32
 
 static uint32_t hashKey(void * key, int length) {
   uint8_t * bytes = (uint8_t *)key;
@@ -24,9 +23,9 @@ static uint32_t hashKey(void * key, int length) {
 
 static int isNull(uint8_t *bytes, size_t size) {
   for (size_t i = 0; i < size; i++) {
-    if (bytes[i] != 0) return false;
+    if (bytes[i] != 0) return HM_FALSE;
   }
-  return true;
+  return HM_TRUE;
 }
 
 static uint8_t * linearProbing(Map * map, void * entries, void * key, size_t entrySize, size_t capacity) {
@@ -55,13 +54,13 @@ static uint8_t * linearProbing(Map * map, void * entries, void * key, size_t ent
 }
 
 static int resizeArray(Map * map) {
-  int newCapacity = map->capacity + MAP_GROWTH;
-  if (newCapacity <= 0) return false;
+  int newCapacity = map->capacity + HS_MAP_GROWTH;
+  if (newCapacity <= 0) return HM_FALSE;
   size_t entrySize = map->key_size + map->value_size;
 
   uint8_t * oldEntries = (uint8_t *)map->entries;
   uint8_t * newEntries = malloc(newCapacity * entrySize);
-  if (newEntries == NULL) return false;
+  if (newEntries == NULL) return HM_FALSE;
 
   memset(newEntries, 0, newCapacity * entrySize);
   map->count = 0;
@@ -83,7 +82,7 @@ static int resizeArray(Map * map) {
   free(map->entries);
   map->entries = newEntries;
   map->capacity = newCapacity;
-  return true;
+  return HM_TRUE;
 }
 
 void initMap(Map * map, size_t key_size, size_t value_size, int (*cmp)(void const * key1, void const * key2)) {
@@ -105,7 +104,7 @@ void freeMap(Map * map) {
 }
 
 int mapPut(Map * map, void * key, void * value) {
-  if (map->count >= map->capacity * MAX_LOAD)
+  if (map->count >= map->capacity * HS_MAX_LOAD)
     resizeArray(map);
 
   uint8_t * entry = linearProbing(map, map->entries, key, (map->key_size + map->value_size), map->capacity);

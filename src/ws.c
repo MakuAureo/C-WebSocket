@@ -21,10 +21,10 @@
 #define WS_EVENTS_PER_LOOP 32
 #define WS_SPECIAL_KEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-#define WS_FIN_BIT_END 0x80
-#define WS_OPCODE_TEXT 0x1
-#define WS_OPCODE_CLOSE 0x8
-#define WS_OPCODE_PING 0x9
+#define WS_FIN_BIT_END 0x80 // 1000 0000
+#define WS_OPCODE_TEXT 0x01 // 0000 0001
+#define WS_OPCODE_CLOSE 0x08// 0000 1000
+#define WS_OPCODE_PING 0x09 // 0000 1001
 
 //This is the compare function for the connections hashmap, the keys are of type int
 static int compareConnections(void const * key1_int, void const * key2_int) {

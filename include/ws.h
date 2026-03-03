@@ -30,8 +30,8 @@ struct WSSocket{
   int socketOpts;
   int socketEventPoll;
   struct sockaddr_in addrInfo;
-  Map connections;
   Map paths;
+  Map connections;
 };
 
 // Returns 0 on success, -1 otherwise
