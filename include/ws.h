@@ -16,8 +16,8 @@ struct WSPathHandler {
 };
 
 struct WSConnection {
-  int socketFD;
-  int needsHandshake;
+  int32_t socketFD;
+  int8_t needsHandshake;
   char * recvBuffer;
   char * sendBuffer;
   struct sockaddr_in addrInfo;
@@ -25,24 +25,24 @@ struct WSConnection {
 };
 
 struct WSSocket{
-  int socketFD;
-  int socketOpts;
-  int socketEventPoll;
+  int32_t socketFD;
+  int32_t socketOpts;
+  int32_t socketEventPoll;
   struct sockaddr_in addrInfo;
   Map paths;
   Map connections;
 };
 
 // Returns 0 on success, -1 otherwise
-int initSocket(WSSocket * socketInfo);
+int8_t initSocket(WSSocket * socketInfo);
 
 // Returns 0 on success, -1 otherwise
-int bindSocket(WSSocket * socketInfo, unsigned int const port);
+int8_t bindSocket(WSSocket * socketInfo, unsigned int const port);
 
 void closeSocket(WSSocket * socketInfo);
 
 // Returns 0 on success, regex error code otherwise (can be passed to `regerror`)
-int addValidPath(WSSocket * const socketInfo, char const * const path,
+int8_t addValidPath(WSSocket * const socketInfo, char const * const path,
     void (*onHandshake)(WSConnection const * const client),
     void (*onDisconnect)(WSConnection const * const client),
     size_t (*onMessage)(WSConnection const * const client, char const * const incData, char ** const outData));
