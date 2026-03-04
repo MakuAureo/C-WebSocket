@@ -9,11 +9,11 @@
 #define HM_MAX_LOAD 0.6
 #define HM_MAP_GROWTH 32
 
-static uint32_t defaultHash(void * key, int length) {
+static uint32_t defaultHash(void * key, size_t length) {
   uint8_t * bytes = (uint8_t *)key;
   uint32_t hash = 2166136261u;
 
-  for (int i = 0; i < length; i++) {
+  for (size_t i = 0; i < length; i++) {
     hash ^= bytes[i];
     hash *= 16777619;
   }
@@ -21,7 +21,7 @@ static uint32_t defaultHash(void * key, int length) {
   return hash;
 }
 
-static int isNull(uint8_t *bytes, size_t size) {
+static int8_t isNull(uint8_t *bytes, size_t size) {
   for (size_t i = 0; i < size; i++) {
     if (bytes[i] != 0) return HM_FALSE;
   }
@@ -53,8 +53,8 @@ static uint8_t * linearProbing(Map * map, void * entries, void * key, size_t ent
   }
 }
 
-static int resizeArray(Map * map) {
-  int newCapacity = map->capacity + HM_MAP_GROWTH;
+static int8_t resizeArray(Map * map) {
+  uint32_t newCapacity = map->capacity + HM_MAP_GROWTH;
   if (newCapacity <= 0) return HM_FALSE;
   size_t entrySize = map->key_size + map->value_size;
 
@@ -65,7 +65,7 @@ static int resizeArray(Map * map) {
   memset(newEntries, 0, newCapacity * entrySize);
   map->count = 0;
 
-  for (int i = 0; i < map->capacity; i++) {
+  for (uint32_t i = 0; i < map->capacity; i++) {
     uint8_t * oldEntry = oldEntries + (i * entrySize);
     void * key = oldEntry;
     void * value = oldEntry + map->key_size;
@@ -85,7 +85,7 @@ static int resizeArray(Map * map) {
   return HM_TRUE;
 }
 
-void initMap(Map * map, size_t key_size, size_t value_size, int (*cmp)(void const * key1, void const  * key2), uint32_t (*hash)(void * key, int length)) {
+void initMap(Map * map, size_t key_size, size_t value_size, int8_t (*cmp)(void const * key1, void const  * key2), uint32_t (*hash)(void * key, size_t length)) {
   map->count = 0;
   map->capacity = 0;
   map->entries = NULL;
@@ -104,13 +104,13 @@ void freeMap(Map * map) {
   map->value_size = 0;
 }
 
-int mapPut(Map * map, void * key, void * value) {
+int8_t mapPut(Map * map, void * key, void * value) {
   if (map->count >= map->capacity * HM_MAX_LOAD)
     resizeArray(map);
 
   uint8_t * entry = linearProbing(map, map->entries, key, (map->key_size + map->value_size), map->capacity);
 
-  int isNewKey = isNull(entry, map->key_size);
+  int8_t isNewKey = isNull(entry, map->key_size);
   if (isNewKey && isNull(entry + map->key_size, map->value_size))
     map->count++;
 
@@ -152,12 +152,12 @@ void mapClear(Map * map) {
 
 void mapForEach(Map * map, void * context, void (*func)(void * key, void * value, void * context)) {
   if (map->count != 0) {
-    for (int i = 0; i < map->capacity; i++) {
+    for (uint32_t i = 0; i < map->capacity; i++) {
       uint8_t * entry = map->entries + (i * (map->key_size + map->value_size));
       void * key = entry;
       void * value = entry + map->key_size;
-      char isEmpty = 1;
-      for (int j = 0; j < map->key_size; j++) {
+      uint8_t isEmpty = 1;
+      for (size_t j = 0; j < map->key_size; j++) {
         if (entry[j] != 0) {
           isEmpty = 0;
           break;

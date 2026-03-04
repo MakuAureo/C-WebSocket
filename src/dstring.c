@@ -3,7 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-static int resize(DString * str, int size) {
+static int8_t resize(DString * str, size_t size) {
   size_t newCap = str->capacity;
   while (newCap < size)
     newCap = newCap << 1;
@@ -40,7 +40,7 @@ void dstrfree(DString * str) {
   str = NULL;
 }
 
-int dstrcmp(DString const * const str1, DString const * const str2) {
+int8_t dstrcmp(DString const * const str1, DString const * const str2) {
   if (str1->length != str2->length)
     return 0;
 

@@ -27,15 +27,15 @@
 #define WS_OPCODE_PING 0x09 // 0000 1001
 #define WS_OPCODE_PONG 0x0A // 0000 1001
 
-static int compareConnections(void const * key1_int, void const * key2_int) {
-  return *(int *)key1_int == *(int *)key2_int;
+static int8_t compareConnections(void const * key1_int, void const * key2_int) {
+  return *(int32_t *)key1_int == *(int32_t *)key2_int;
 }
 
-static int comparePaths(void const * key1_dstr, void const * key2_dstr) {
+static int8_t comparePaths(void const * key1_dstr, void const * key2_dstr) {
   return dstrcmp((DString const *)key1_dstr, (DString const *)key2_dstr);
 }
 
-static uint32_t hashString(void * key, int length) {
+static uint32_t hashString(void * key, size_t length) {
   uint8_t * bytes = (uint8_t *)((DString *)key)->string;
   uint32_t hash = 2166136261u;
 
@@ -47,7 +47,7 @@ static uint32_t hashString(void * key, int length) {
   return hash;
 }
 
-static int acceptNewConnection(WSSocket * const socketInfo, WSConnection * const client) {
+static int8_t acceptNewConnection(WSSocket * const socketInfo, WSConnection * const client) {
   socklen_t addrLen = sizeof(struct sockaddr_in);
 
   memset(client, 0, sizeof(WSConnection));
@@ -79,11 +79,10 @@ static int acceptNewConnection(WSSocket * const socketInfo, WSConnection * const
 static void sendCloseFrameTo(WSConnection const * const client, uint16_t closeCode) {
   socklen_t addrLen = sizeof(struct sockaddr_in);
   closeCode = htons(closeCode);
-  unsigned char * closeCodeBits = (unsigned char *)&closeCode;
+  uint8_t * closeCodeBits = (uint8_t *)&closeCode;
 
-  unsigned char closeFrame[4] = {0x88, 0x2, 0x0, 0x0};
-  closeFrame[2] = closeCodeBits[0];
-  closeFrame[3] = closeCodeBits[1];
+  uint8_t closeFrame[4] = {0x88, 0x2, 0x0, 0x0};
+  memcpy(closeFrame, closeCodeBits, 2);
   sendto(client->socketFD, closeFrame, 4, 0, (struct sockaddr *)&(client->addrInfo), addrLen);
 }
 
@@ -116,7 +115,7 @@ static void freeConnectionPathForEachWrapper(void * pathPtr, void * pathHandlerP
   dstrfree(pathPtr);
 }
 
-static int isHTTPUpgrade(char const * const request, ssize_t length, char ** path, char ** key) {
+static uint8_t isHTTPUpgrade(char const * const request, ssize_t length, char ** path, char ** key) {
   enum HTTPCHECK {
     GET,
     PATH,
@@ -133,7 +132,7 @@ static int isHTTPUpgrade(char const * const request, ssize_t length, char ** pat
   uint8_t found = FOUND_NONE;
 
   enum HTTPCHECK state = GET;
-  for (char const * curr = request;;) {
+  for (char const * curr = request; curr < request + length;) {
     switch (state) {
       case GET:;
         char get[] = "GET";
@@ -230,7 +229,7 @@ static int isHTTPUpgrade(char const * const request, ssize_t length, char ** pat
   }
 }
 
-static int performHandshake(WSSocket * const socketInfo, WSConnection * const client) {
+static int8_t performHandshake(WSSocket * const socketInfo, WSConnection * const client) {
   char addr[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &(client->addrInfo.sin_addr), addr, INET_ADDRSTRLEN);
   socklen_t addrLen = sizeof(struct sockaddr_in);
@@ -297,12 +296,12 @@ static int performHandshake(WSSocket * const socketInfo, WSConnection * const cl
     return -1;
 }
 
-static int receiveDataFrom(WSSocket * const socketInfo, WSConnection * const client) {
+static int32_t receiveDataFrom(WSSocket * const socketInfo, WSConnection * const client) {
   char addr[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &(client->addrInfo.sin_addr), addr, INET_ADDRSTRLEN);
   socklen_t addrLen = sizeof(struct sockaddr_in);
 
-  unsigned char dataHeader_2B[2];
+  uint8_t dataHeader_2B[2];
   recvfrom(client->socketFD, dataHeader_2B, 2, 0, (struct sockaddr *)&(client->addrInfo), &addrLen);
   uint8_t finBit = dataHeader_2B[0] & 0xF0;
   uint8_t opcode = dataHeader_2B[0] & 0x0F;
@@ -333,17 +332,17 @@ static int receiveDataFrom(WSSocket * const socketInfo, WSConnection * const cli
 
   uint64_t payloadLen = dataHeader_2B[1] & 0x7F;
   if (payloadLen == 126) {
-    unsigned char extraLen[2];
+    uint8_t extraLen[2];
     recvfrom(client->socketFD, extraLen, 2, 0, (struct sockaddr *)&(client->addrInfo), &addrLen);
     payloadLen = ntohs(*(uint16_t *)extraLen);
   } else if (payloadLen == 127) {
-    unsigned char extraLen[8];
+    uint8_t extraLen[8];
     recvfrom(client->socketFD, extraLen, 8, 0, (struct sockaddr *)&(client->addrInfo), &addrLen);
     payloadLen = ntohl(*(uint64_t *)extraLen);
   }
 
   uint8_t isPing = (opcode == WS_OPCODE_PING) ? 1 : 0;
-  unsigned char mask_4B[4];
+  uint8_t mask_4B[4];
   recvfrom(client->socketFD, mask_4B, 4, 0, (struct sockaddr *)&(client->addrInfo), &addrLen);
 
   if (payloadLen > 0) {
@@ -354,13 +353,13 @@ static int receiveDataFrom(WSSocket * const socketInfo, WSConnection * const cli
     }
     client->recvBuffer = payloadAlloc;
     recvfrom(client->socketFD, client->recvBuffer, payloadLen, 0, (struct sockaddr *)&(client->addrInfo), &addrLen);
-    for (int i = 0; i < payloadLen; i++)
+    for (uint64_t i = 0; i < payloadLen; i++)
       client->recvBuffer[i] ^= mask_4B[i % 4];
     client->recvBuffer[payloadLen] = '\0';
   }
 
   if (isPing) {
-    unsigned char pong[payloadLen + 2];
+    uint8_t pong[payloadLen + 2];
     pong[0] = WS_FIN_BIT_END | WS_OPCODE_PONG;
     pong[1] = dataHeader_2B[1] & (0x7F);
     if (payloadLen > 0)
@@ -377,18 +376,18 @@ static int receiveDataFrom(WSSocket * const socketInfo, WSConnection * const cli
     return closeCode;
 }
 
-static int sendDataTo(WSConnection const * const client, char const * buffer, size_t size) {
+static size_t sendDataTo(WSConnection const * const client, char const * buffer, size_t size) {
   if (size == 0)
     return 0;
 
   socklen_t addrLen = sizeof(struct sockaddr_in);
-  unsigned char headerSize = 2;
+  uint8_t headerSize = 2;
   if (size > 125)
     headerSize += 2;
   if (size > 65535)
     headerSize += 6;
   
-  unsigned char message[size + headerSize];
+  uint8_t message[size + headerSize];
   message[0] = WS_FIN_BIT_END | WS_OPCODE_TEXT;
   if (headerSize == 2)
     message[1] = (char)size;
@@ -408,7 +407,7 @@ static int sendDataTo(WSConnection const * const client, char const * buffer, si
   return size;
 }
 
-int initSocket(WSSocket * socketInfo) {
+int8_t initSocket(WSSocket * socketInfo) {
   memset(socketInfo, 0, sizeof(WSSocket));
 
   if ((socketInfo->socketFD = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)) == -1) {
@@ -416,7 +415,7 @@ int initSocket(WSSocket * socketInfo) {
     return -1;
   }
 
-  if ((socketInfo->socketEventPoll = epoll_create(8)) == -1) {
+  if ((socketInfo->socketEventPoll = epoll_create1(0)) == -1) {
     printf("Could not create event poll for new socket: %s\n", strerror(errno));
     goto closeSocket;
   }
@@ -426,7 +425,7 @@ int initSocket(WSSocket * socketInfo) {
     goto closeSocket;
   }
 
-  initMap(&(socketInfo->connections), sizeof(int), sizeof(WSConnection), compareConnections, NULL);
+  initMap(&(socketInfo->connections), sizeof(int32_t), sizeof(WSConnection), compareConnections, NULL);
   initMap(&(socketInfo->paths), sizeof(DString), sizeof(WSPathHandler), comparePaths, hashString);
 
   struct epoll_event socketEvent = {
@@ -445,7 +444,7 @@ int initSocket(WSSocket * socketInfo) {
     return -1;
 }
 
-int bindSocket(WSSocket * socketInfo, unsigned int const port) {
+int8_t bindSocket(WSSocket * socketInfo, uint32_t const port) {
   socklen_t addrLen = sizeof(struct sockaddr_in);
 
   memset(&(socketInfo->addrInfo), 0, addrLen);
@@ -484,7 +483,7 @@ void closeSocket(WSSocket * socketInfo) {
   socketInfo = NULL;
 }
 
-int addValidPath(WSSocket * const socketInfo, char const * const path,
+int8_t addValidPath(WSSocket * const socketInfo, char const * const path,
     void (*onHandshake)(WSConnection const * const client),
     void (*onDisconnect)(WSConnection const * const client),
     size_t (*onMessage)(WSConnection const * const client, char const * const incData, char ** const outData)) {
@@ -504,8 +503,8 @@ int addValidPath(WSSocket * const socketInfo, char const * const path,
 void runSocketLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection const * const client)) {
   struct epoll_event eventsTriggered[WS_EVENTS_PER_LOOP];
   for (;;) {
-    int events = epoll_wait(socketInfo->socketEventPoll, eventsTriggered, WS_EVENTS_PER_LOOP, -1);
-    for (int i = 0; i < events; i++) {
+    int32_t events = epoll_wait(socketInfo->socketEventPoll, eventsTriggered, WS_EVENTS_PER_LOOP, -1);
+    for (int32_t i = 0; i < events; i++) {
       if (eventsTriggered[i].data.fd == socketInfo->socketFD) {
         WSConnection client;
         acceptNewConnection(socketInfo, &client);
@@ -521,7 +520,7 @@ void runSocketLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection c
             continue;
           connection->pathHanlder->onHandshake(connection);
         } else {
-          int closeCode;
+          int32_t closeCode;
           if ((closeCode = receiveDataFrom(socketInfo, connection)) > 0) {
             connection->pathHanlder->onDisconnect(connection);
             freeConnectionResources(socketInfo, connection, closeCode);
