@@ -6,10 +6,10 @@
 
 #define HM_TRUE 1
 #define HM_FALSE 0
-#define HS_MAX_LOAD 0.6
-#define HS_MAP_GROWTH 32
+#define HM_MAX_LOAD 0.6
+#define HM_MAP_GROWTH 32
 
-static uint32_t hashKey(void * key, int length) {
+static uint32_t defaultHash(void * key, int length) {
   uint8_t * bytes = (uint8_t *)key;
   uint32_t hash = 2166136261u;
 
@@ -29,7 +29,7 @@ static int isNull(uint8_t *bytes, size_t size) {
 }
 
 static uint8_t * linearProbing(Map * map, void * entries, void * key, size_t entrySize, size_t capacity) {
-  uint32_t hash = hashKey(key, map->key_size);
+  uint32_t hash = map->hashKey(key, map->key_size);
   uint32_t index = hash % capacity;
   uint8_t * tombstone = NULL;
 
@@ -54,7 +54,7 @@ static uint8_t * linearProbing(Map * map, void * entries, void * key, size_t ent
 }
 
 static int resizeArray(Map * map) {
-  int newCapacity = map->capacity + HS_MAP_GROWTH;
+  int newCapacity = map->capacity + HM_MAP_GROWTH;
   if (newCapacity <= 0) return HM_FALSE;
   size_t entrySize = map->key_size + map->value_size;
 
@@ -85,13 +85,14 @@ static int resizeArray(Map * map) {
   return HM_TRUE;
 }
 
-void initMap(Map * map, size_t key_size, size_t value_size, int (*cmp)(void const * key1, void const * key2)) {
+void initMap(Map * map, size_t key_size, size_t value_size, int (*cmp)(void const * key1, void const  * key2), uint32_t (*hash)(void * key, int length)) {
   map->count = 0;
   map->capacity = 0;
   map->entries = NULL;
   map->key_size = key_size;
   map->value_size = value_size;
   map->cmp = cmp;
+  map->hashKey = (hash == NULL) ? defaultHash : hash;
 }
 
 void freeMap(Map * map) {
@@ -104,7 +105,7 @@ void freeMap(Map * map) {
 }
 
 int mapPut(Map * map, void * key, void * value) {
-  if (map->count >= map->capacity * HS_MAX_LOAD)
+  if (map->count >= map->capacity * HM_MAX_LOAD)
     resizeArray(map);
 
   uint8_t * entry = linearProbing(map, map->entries, key, (map->key_size + map->value_size), map->capacity);

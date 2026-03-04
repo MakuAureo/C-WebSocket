@@ -1,6 +1,7 @@
 #ifndef HASHMAP_H
 #define HASHMAP_H
 
+#include <stdint.h>
 #include <stddef.h>
 
 typedef struct {
@@ -10,9 +11,10 @@ typedef struct {
   size_t key_size;
   size_t value_size;
   int (*cmp)(void const * key1, void const  * key2);
+  uint32_t (*hashKey)(void * key, int length);
 } Map;
 
-void initMap(Map * map, size_t key_size, size_t value_size, int (*cmp)(void const * key1, void const  * key2));
+void initMap(Map * map, size_t key_size, size_t value_size, int (*cmp)(void const * key1, void const  * key2), uint32_t (*hash)(void * key, int length));
 void freeMap(Map * map);
 
 //Returns 1 if key-value is a new pair or 0 if key already existed and value was updated

@@ -18,7 +18,6 @@ struct WSPathHandler {
 struct WSConnection {
   int socketFD;
   int needsHandshake;
-  char * connectionPath;
   char * recvBuffer;
   char * sendBuffer;
   struct sockaddr_in addrInfo;

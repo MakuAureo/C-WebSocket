@@ -25,14 +25,26 @@
 #define WS_OPCODE_TEXT 0x01 // 0000 0001
 #define WS_OPCODE_CLOSE 0x08// 0000 1000
 #define WS_OPCODE_PING 0x09 // 0000 1001
+#define WS_OPCODE_PONG 0x0A // 0000 1001
 
-//This is the compare function for the connections hashmap, the keys are of type int
 static int compareConnections(void const * key1_int, void const * key2_int) {
   return *(int *)key1_int == *(int *)key2_int;
 }
 
 static int comparePaths(void const * key1_dstr, void const * key2_dstr) {
   return dstrcmp((DString const *)key1_dstr, (DString const *)key2_dstr);
+}
+
+static uint32_t hashString(void * key, int length) {
+  uint8_t * bytes = (uint8_t *)((DString *)key)->string;
+  uint32_t hash = 2166136261u;
+
+  for (int i = 0; i < ((DString *)key)->length; i++) {
+    hash ^= bytes[i];
+    hash *= 16777619;
+  }
+
+  return hash;
 }
 
 static int acceptNewConnection(WSSocket * const socketInfo, WSConnection * const client) {
@@ -64,12 +76,28 @@ static int acceptNewConnection(WSSocket * const socketInfo, WSConnection * const
   return 0;
 }
 
-static void freeConnectionResources(WSSocket * const socketInfo, WSConnection * const client) {
+static void sendCloseFrameTo(WSConnection const * const client, uint16_t closeCode) {
+  socklen_t addrLen = sizeof(struct sockaddr_in);
+  closeCode = htons(closeCode);
+  unsigned char * closeCodeBits = (unsigned char *)&closeCode;
+
+  unsigned char closeFrame[4] = {0x88, 0x2, 0x0, 0x0};
+  closeFrame[2] = closeCodeBits[0];
+  closeFrame[3] = closeCodeBits[1];
+  sendto(client->socketFD, closeFrame, 4, 0, (struct sockaddr *)&(client->addrInfo), addrLen);
+}
+
+static void freeConnectionResources(WSSocket * const socketInfo, WSConnection * const client, uint16_t const closeCode) {
+  sendCloseFrameTo(client, closeCode);
+
   free(client->recvBuffer);
   free(client->sendBuffer);
-  free(client->connectionPath);
+
   epoll_ctl(socketInfo->socketEventPoll, EPOLL_CTL_DEL, client->socketFD, NULL);
+  
+  shutdown(client->socketFD, SHUT_RDWR);
   close(client->socketFD);
+  
   mapRemove(&(socketInfo->connections), &(client->socketFD));
 }
 
@@ -78,12 +106,13 @@ static void freeConnectionResourcesForEachWrapper(void * clientFDPtr, void * wsC
   
   WSSocket * socketInfo = (WSSocket *)contextPtr;
   WSConnection * client = (WSConnection *)wsConnectionPtr;
-  freeConnectionResources(socketInfo, client);
+  freeConnectionResources(socketInfo, client, 1001);
 }
 
 static void freeConnectionPathForEachWrapper(void * pathPtr, void * pathHandlerPtr, void * contextPtr) {
   (void)pathHandlerPtr; //unused
   (void)contextPtr; //unused
+
   dstrfree(pathPtr);
 }
 
@@ -94,9 +123,15 @@ static int isHTTPUpgrade(char const * const request, ssize_t length, char ** pat
     HTTP,
     KEY,
   };
-  int foundConnection = 0;
-  int foundUpgrade = 0;
-  int foundKey = 0;
+
+  enum FOUND {
+    FOUND_NONE = 0,
+    FOUND_CONNECTION = 1,
+    FOUND_UPGRADE = (1 << 1),
+    FOUND_KEY = (1 << 2)
+  };
+  uint8_t found = FOUND_NONE;
+
   enum HTTPCHECK state = GET;
   for (char const * curr = request;;) {
     switch (state) {
@@ -136,7 +171,7 @@ static int isHTTPUpgrade(char const * const request, ssize_t length, char ** pat
         char wskey[] = "Sec-WebSocket-Key";
 
         for (;curr < request + length; curr++) {
-          if (!foundConnection && *curr == connection[0]) {
+          if (!(found & FOUND_CONNECTION) && *curr == connection[0]) {
             size_t i = 0;
             for (; i < sizeof(connection); i++) {
              if (curr[i] == connection[i])
@@ -144,11 +179,11 @@ static int isHTTPUpgrade(char const * const request, ssize_t length, char ** pat
              break;
             }
             if (i == sizeof(connection) - 1) {
-              foundConnection = 1;
+              found |= FOUND_CONNECTION;
               curr += i;
             }
           }
-          if (!foundUpgrade && *curr == upgrade[0]) {
+          if (!(found & FOUND_UPGRADE) && *curr == upgrade[0]) {
             size_t i = 0;
             for (; i < sizeof(upgrade); i++) {
               if (curr[i] == upgrade[i])
@@ -156,11 +191,11 @@ static int isHTTPUpgrade(char const * const request, ssize_t length, char ** pat
               break;
             }
             if (i == sizeof(upgrade) - 1) {
-              foundUpgrade = 1;
+              found |= FOUND_UPGRADE;
               curr += i;
             }
           }
-          if (!foundKey && *curr == wskey[0]) {
+          if (!(found & FOUND_KEY) && *curr == wskey[0]) {
             size_t i = 0;
             for (; i < sizeof(wskey); i++) {
               if (curr[i] == wskey[i])
@@ -168,7 +203,7 @@ static int isHTTPUpgrade(char const * const request, ssize_t length, char ** pat
               break;
             }
             if (i == sizeof(wskey) - 1) {
-              foundKey = 1;
+              found |= FOUND_KEY;
               size_t keyLength = 24;
               char const * keyStart = curr + i + 2;
 
@@ -184,7 +219,7 @@ static int isHTTPUpgrade(char const * const request, ssize_t length, char ** pat
   }
 
   exit:
-  if (foundConnection && foundUpgrade && foundKey)
+  if (found == (FOUND_CONNECTION | FOUND_UPGRADE | FOUND_KEY))
     return 1;
   else {
     free(*path);
@@ -224,7 +259,6 @@ static int performHandshake(WSSocket * const socketInfo, WSConnection * const cl
     free(key);
     goto handshakeFail;
   }
-  free(path);
   dstrfree(&pathDString);
   client->pathHanlder = pathHandler;
 
@@ -248,14 +282,18 @@ static int performHandshake(WSSocket * const socketInfo, WSConnection * const cl
   sendto(client->socketFD, response, strlen(response), 0, &(client->addrInfo), addrLen);
   client->needsHandshake = 0;
 
-  printf("(%s): Succeful handshake on path %s\n", addr, client->connectionPath);
+  printf("(%s): Succeful handshake on path %s\n", addr, path);
+  free(path);
 
   client->recvBuffer = malloc(WS_BUFFER_SML);
   client->sendBuffer = malloc(WS_BUFFER_SML);
   return 0;
 
   handshakeFail:
-    freeConnectionResources(socketInfo, client);
+    epoll_ctl(socketInfo->socketEventPoll, EPOLL_CTL_DEL, client->socketFD, NULL);
+    shutdown(client->socketFD, SHUT_RDWR);
+    close(client->socketFD);
+    mapRemove(&(socketInfo->connections), &(client->socketFD));
     return -1;
 }
 
@@ -263,35 +301,33 @@ static int receiveDataFrom(WSSocket * const socketInfo, WSConnection * const cli
   char addr[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &(client->addrInfo.sin_addr), addr, INET_ADDRSTRLEN);
   socklen_t addrLen = sizeof(struct sockaddr_in);
-  unsigned char closeFrame[4] = {0x88, 0x2, 0x0, 0x0};
-  unsigned char * closeCodeBits;
 
   unsigned char dataHeader_2B[2];
   recvfrom(client->socketFD, dataHeader_2B, 2, 0, (struct sockaddr *)&(client->addrInfo), &addrLen);
   uint8_t finBit = dataHeader_2B[0] & 0xF0;
   uint8_t opcode = dataHeader_2B[0] & 0x0F;
-  uint16_t closeCode;
+  uint16_t closeCode = 0;
 
   if (finBit != WS_FIN_BIT_END) {
     printf("(%s): Refusing to read fragmented data. Closing connection.\n", addr);
-    closeCode = htons(1003);
+    closeCode = 1003;
     goto closeConnection;
   }
   if (opcode == WS_OPCODE_CLOSE) {
     printf("(%s): Client asked to close connection.\n", addr);
-    closeCode = htons(1000);
+    closeCode = 1000;
     goto closeConnection;
   }
   if (opcode != WS_OPCODE_TEXT && opcode != WS_OPCODE_PING) {
     printf("(%s): Refusing to read non-text data. Closing connection.\n", addr);
-    closeCode = htons(1003);
+    closeCode = 1003;
     goto closeConnection;
   }
 
   uint8_t maskBit = (dataHeader_2B[1] & 0x80) >> 7;
   if (maskBit != 1) {
     printf("(%s): Bad message maskBit (protocol violation). Closing connection.\n", addr);
-    closeCode = htons(1002);
+    closeCode = 1002;
     goto closeConnection;
   }
 
@@ -306,14 +342,14 @@ static int receiveDataFrom(WSSocket * const socketInfo, WSConnection * const cli
     payloadLen = ntohl(*(uint64_t *)extraLen);
   }
 
-  int isPing = (opcode == WS_OPCODE_PING) ? 1 : 0;
+  uint8_t isPing = (opcode == WS_OPCODE_PING) ? 1 : 0;
   unsigned char mask_4B[4];
   recvfrom(client->socketFD, mask_4B, 4, 0, (struct sockaddr *)&(client->addrInfo), &addrLen);
 
   if (payloadLen > 0) {
     char * payloadAlloc = realloc(client->recvBuffer, (payloadLen + 1) * sizeof(char));
     if (payloadAlloc == NULL) {
-      closeCode = htons(1001);
+      closeCode = 1001;
       goto closeConnection;
     }
     client->recvBuffer = payloadAlloc;
@@ -324,11 +360,11 @@ static int receiveDataFrom(WSSocket * const socketInfo, WSConnection * const cli
   }
 
   if (isPing) {
-    char pong[payloadLen + 2];
-    pong[0] = 0x8A;
-    pong[1] = dataHeader_2B[1] & 0x7F;
+    unsigned char pong[payloadLen + 2];
+    pong[0] = WS_FIN_BIT_END | WS_OPCODE_PONG;
+    pong[1] = dataHeader_2B[1] & (0x7F);
     if (payloadLen > 0)
-      strncpy(pong + 2, client->recvBuffer, payloadLen);
+      memcpy(pong + 2, client->recvBuffer, payloadLen);
     sendto(client->socketFD, pong, payloadLen + 2, 0, (struct sockaddr *)&(client->addrInfo), addrLen);
     printf("(%s): ping.\n", addr);
   } else {
@@ -338,12 +374,7 @@ static int receiveDataFrom(WSSocket * const socketInfo, WSConnection * const cli
   return isPing;
 
   closeConnection:
-    closeCodeBits = (unsigned char *)&closeCode;
-    closeFrame[2] = closeCodeBits[0];
-    closeFrame[3] = closeCodeBits[1];
-    sendto(client->socketFD, closeFrame, 4, 0, (struct sockaddr *)&(client->addrInfo), addrLen);
-    freeConnectionResources(socketInfo, client);
-    return ntohs(closeCode);
+    return closeCode;
 }
 
 static int sendDataTo(WSConnection const * const client, char const * buffer, size_t size) {
@@ -395,8 +426,8 @@ int initSocket(WSSocket * socketInfo) {
     goto closeSocket;
   }
 
-  initMap(&(socketInfo->connections), sizeof(int), sizeof(WSConnection), compareConnections);
-  initMap(&(socketInfo->paths), sizeof(DString), sizeof(WSPathHandler), comparePaths);
+  initMap(&(socketInfo->connections), sizeof(int), sizeof(WSConnection), compareConnections, NULL);
+  initMap(&(socketInfo->paths), sizeof(DString), sizeof(WSPathHandler), comparePaths, hashString);
 
   struct epoll_event socketEvent = {
     .data.fd = socketInfo->socketFD,
@@ -490,8 +521,10 @@ void runSocketLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection c
             continue;
           connection->pathHanlder->onHandshake(connection);
         } else {
-          if (receiveDataFrom(socketInfo, connection) > 0) {
+          int closeCode;
+          if ((closeCode = receiveDataFrom(socketInfo, connection)) > 0) {
             connection->pathHanlder->onDisconnect(connection);
+            freeConnectionResources(socketInfo, connection, closeCode);
             continue;
           }
           size_t size = connection->pathHanlder->onMessage(connection, connection->recvBuffer, &(connection->sendBuffer));
