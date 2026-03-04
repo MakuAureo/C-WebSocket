@@ -4,8 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <hashmap.h>
-#include <ws.h>
+#include "ws.h"
 
 #define PORT 21455
 
@@ -13,22 +12,28 @@ void sigintHandler(int sig);
 void onConnect(WSConnection const * const client);
 void onHandshake(WSConnection const * const client);
 size_t onMessage(WSConnection const * const client, char const * const incData, char ** outData);
+void onDisconnect(WSConnection const * const client);
 
 WSSocket socketInfo;
 
-int main(int argc, char **argv) {
-  if (initSocket(&socketInfo) == -1)
+int main(int argc, char ** argv) {
+  if (initSocket(&socketInfo) != 0)
     exit(EXIT_FAILURE);
 
-  if (bindSocket(&socketInfo, PORT) == -1) {
+  if (bindSocket(&socketInfo, PORT) != 0) {
     close(socketInfo.socketFD);
     exit(EXIT_FAILURE);
   }
 
   signal(SIGINT, sigintHandler);
-  printf("(Server): Started and bound socket to port: %d\n", PORT);
+  printf("(Server): Socket bound and listening to port: %d\n", PORT);
 
-  startEventLoop(&socketInfo, onConnect, onHandshake, onMessage);
+  if (addValidPath(&socketInfo, "/chat", onHandshake, onDisconnect, onMessage) != 0) {
+    printf("(Server): Invalid regex path\n");
+    exit(EXIT_FAILURE);
+  }
+
+  runSocketLoop(&socketInfo, onConnect);
 }
 
 void sigintHandler(int sig) {
@@ -56,4 +61,8 @@ size_t onMessage(WSConnection const * const client, char const * const incData, 
   strcpy(data, testString);
   *outData = data;
   return size + 1;
+}
+
+void onDisconnect(WSConnection const * const client) {
+  return;
 }

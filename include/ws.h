@@ -2,47 +2,51 @@
 #define WS_H
 
 #include <arpa/inet.h>
-#include <pthread.h>
-#include <hashmap.h>
 
-#define WS_WORKER_THREADS 4
+#include "hashmap.h"
 
-typedef struct {
+typedef struct WSPathHandler WSPathHandler;
+typedef struct WSConnection WSConnection;
+typedef struct WSSocket WSSocket;
+
+struct WSPathHandler {
+  void (*onHandshake)(WSConnection const * const client);
+  void (*onDisconnect)(WSConnection const * const client);
+  size_t (*onMessage)(WSConnection const * const client, char const * const incData, char ** const outData);
+};
+
+struct WSConnection {
   int socketFD;
   int needsHandshake;
-  char * connectionPath;
   char * recvBuffer;
   char * sendBuffer;
   struct sockaddr_in addrInfo;
-} WSConnection;
+  WSPathHandler * pathHanlder;
+};
 
-typedef struct {
-  int workerEventPoll;
-  void (*onHandshake)(WSConnection const * const client);
-  size_t (*onMessage)(WSConnection const * const client, char const * const incData, char ** const outData);
-  pthread_t threadId;
-} WSWorker;
-
-typedef struct {
+struct WSSocket{
   int socketFD;
   int socketOpts;
   int socketEventPoll;
   struct sockaddr_in addrInfo;
-  WSWorker workerThreads[WS_WORKER_THREADS];
+  Map paths;
   Map connections;
-} WSSocket;
+};
 
-// Returns -1 on error, 0 otherwise
+// Returns 0 on success, -1 otherwise
 int initSocket(WSSocket * socketInfo);
 
-// Returns -1 on error, 0 otherwise
+// Returns 0 on success, -1 otherwise
 int bindSocket(WSSocket * socketInfo, unsigned int const port);
 
 void closeSocket(WSSocket * socketInfo);
 
-void startEventLoop(WSSocket * const socketInfo, 
-    void (*onConnect)(WSConnection const * const client), 
-    void (*onHandshake)(WSConnection const * const client), 
+// Returns 0 on success, regex error code otherwise (can be passed to `regerror`)
+int addValidPath(WSSocket * const socketInfo, char const * const path,
+    void (*onHandshake)(WSConnection const * const client),
+    void (*onDisconnect)(WSConnection const * const client),
     size_t (*onMessage)(WSConnection const * const client, char const * const incData, char ** const outData));
+
+void runSocketLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection const * const client));
 
 #endif
