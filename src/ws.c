@@ -79,10 +79,10 @@ static int8_t acceptNewConnection(WSSocket * const socketInfo, WSConnection * co
 static void sendCloseFrameTo(WSConnection const * const client, uint16_t closeCode) {
   socklen_t addrLen = sizeof(struct sockaddr_in);
   closeCode = htons(closeCode);
-  uint8_t * closeCodeBits = (uint8_t *)&closeCode;
+  uint8_t * closeCodeBits = (uint8_t *)(&closeCode);
 
   uint8_t closeFrame[4] = {0x88, 0x2, 0x0, 0x0};
-  memcpy(closeFrame, closeCodeBits, 2);
+  memcpy(closeFrame + 2, closeCodeBits, 2 * sizeof(uint8_t));
   sendto(client->socketFD, closeFrame, 4, 0, (struct sockaddr *)&(client->addrInfo), addrLen);
 }
 
