@@ -21,7 +21,7 @@ unsigned char * base64_encode(const unsigned char *data, size_t input_length, si
     encoded_data[j++] = base64_table[(triple >> 0 * 6) & 0x3F];
   }
 
-  for (int i = 0; i < (3 - input_length % 3) % 3; i++)
+  for (size_t i = 0; i < (3 - input_length % 3) % 3; i++)
     encoded_data[*output_length - 1 - i] = '=';
 
   encoded_data[*output_length] = '\0';

@@ -16,7 +16,7 @@ void onDisconnect(WSConnection const * const client);
 
 WSSocket socketInfo;
 
-int main(int argc, char ** argv) {
+int main(/*int argc, char ** argv*/) {
   if (initSocket(&socketInfo) != 0)
     exit(EXIT_FAILURE);
 
@@ -37,6 +37,7 @@ int main(int argc, char ** argv) {
 }
 
 void sigintHandler(int sig) {
+  (void) sig;
   const char msg[] = "\n(Server): Closing open connections and free-ing allocated memory\n";
   write(STDOUT_FILENO, msg, strlen(msg));
   closeSocket(&socketInfo);
@@ -44,14 +45,18 @@ void sigintHandler(int sig) {
 }
 
 void onConnect(WSConnection const * const client) {
+  (void)client;
   return;
 }
 
 void onHandshake(WSConnection const * const client) {
+  (void)client;
   return;
 }
 
 size_t onMessage(WSConnection const * const client, char const * const incData, char ** outData) {
+  (void)client;
+  (void)incData;
   char testString[] = 
     "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec fringilla ligula ut magna congue dapibus. "
     "Vestibulum ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia curae; "
@@ -64,5 +69,6 @@ size_t onMessage(WSConnection const * const client, char const * const incData, 
 }
 
 void onDisconnect(WSConnection const * const client) {
+  (void)client;
   return;
 }

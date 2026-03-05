@@ -16,7 +16,7 @@ struct WSPathHandler {
 };
 
 struct WSConnection {
-  int32_t socketFD;
+  int32_t clientFD;
   int8_t needsHandshake;
   char * recvBuffer;
   char * sendBuffer;
@@ -29,8 +29,8 @@ struct WSSocket{
   int32_t socketOpts;
   int32_t socketEventPoll;
   struct sockaddr_in addrInfo;
+  WSConnection ** connections;
   Map paths;
-  Map connections;
 };
 
 // Returns 0 on success, -1 otherwise
