@@ -2,11 +2,15 @@
 #define WS_H
 
 #include <arpa/inet.h>
+#include <pthread.h>
 
 #include "hashmap.h"
 
+#define WS_THREAD_COUNT 4
+
 typedef struct WSPathHandler WSPathHandler;
 typedef struct WSConnection WSConnection;
+typedef struct WSWorker WSWorker;
 typedef struct WSSocket WSSocket;
 
 struct WSPathHandler {
@@ -24,11 +28,19 @@ struct WSConnection {
   WSPathHandler * pathHanlder;
 };
 
-struct WSSocket{
+struct WSWorker {
+  pthread_t thread;
+  int32_t workerFD;
+  int32_t workerOpts;
+  int32_t workerEventPoll;
+};
+
+struct WSSocket {
   int32_t socketFD;
   int32_t socketOpts;
   int32_t socketEventPoll;
   struct sockaddr_in addrInfo;
+  WSWorker threads[WS_THREAD_COUNT];
   Map paths;
   Map connections;
 };

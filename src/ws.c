@@ -21,11 +21,11 @@
 #define WS_EVENTS_PER_LOOP 32
 #define WS_SPECIAL_KEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-#define WS_FIN_BIT_END 0x80 // 1000 0000
-#define WS_OPCODE_TEXT 0x01 // 0000 0001
-#define WS_OPCODE_CLOSE 0x08// 0000 1000
-#define WS_OPCODE_PING 0x09 // 0000 1001
-#define WS_OPCODE_PONG 0x0A // 0000 1001
+#define WS_FIN_BIT_END 0x80
+#define WS_OPCODE_TEXT 0x01
+#define WS_OPCODE_CLOSE 0x08
+#define WS_OPCODE_PING 0x09
+#define WS_OPCODE_PONG 0x0A
 
 static int8_t compareConnections(void const * key1_int, void const * key2_int) {
   return *(int32_t *)key1_int == *(int32_t *)key2_int;
@@ -36,6 +36,8 @@ static int8_t comparePaths(void const * key1_dstr, void const * key2_dstr) {
 }
 
 static uint32_t hashString(void * key, size_t length) {
+  (void)length; // unused
+
   uint8_t * bytes = (uint8_t *)((DString *)key)->string;
   uint32_t hash = 2166136261u;
 
