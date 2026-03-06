@@ -20,7 +20,7 @@ static int8_t resize(DString * str, size_t size) {
 
 void * dstrinit(DString * str, char const * string, size_t const length) {
   str->capacity = 1;
-  while (str->capacity < length) 
+  while (str->capacity <= length) 
     str->capacity = str->capacity << 1;
 
   str->length = length;

@@ -27,13 +27,7 @@
 #define WS_OPCODE_PING 0x09
 #define WS_OPCODE_PONG 0x0A
 
-#define WS_MAX_CONNECTIONS 1024 // This should be set the system's File Descriptor Limit (from ulimit -n), 1024 for testing purposes
-
-#define WS_FIN_BIT_END 0x80 // 1000 0000
-#define WS_OPCODE_TEXT 0x01 // 0000 0001
-#define WS_OPCODE_CLOSE 0x08// 0000 1000
-#define WS_OPCODE_PING 0x09 // 0000 1001
-#define WS_OPCODE_PONG 0x0A // 0000 1001
+#define WS_MAX_CONNECTIONS 1024 // This should be set to the system's File Descriptor Limit (from ulimit -n), by default 1024
 
 static int8_t comparePaths(void const * key1_dstr, void const * key2_dstr) {
   return dstrcmp((DString const *)key1_dstr, (DString const *)key2_dstr);
@@ -99,14 +93,15 @@ static void freeConnectionResources(WSSocket * const socketInfo, WSConnection * 
   free(client->recvBuffer);
   free(client->sendBuffer);
 
-  epoll_ctl(socketInfo->socketEventPoll, EPOLL_CTL_DEL, client->clientFD, NULL);
+  int32_t const clientFD = client->clientFD;
+  epoll_ctl(socketInfo->socketEventPoll, EPOLL_CTL_DEL, clientFD, NULL);
   
-  shutdown(client->clientFD, SHUT_RDWR);
-  close(client->clientFD);
+  shutdown(clientFD, SHUT_RDWR);
+  close(clientFD);
   
-  memset(socketInfo->connections[client->clientFD], 0, sizeof(WSConnection));
-  free(socketInfo->connections[client->clientFD]);
-  socketInfo->connections[client->clientFD] = NULL;
+  memset(socketInfo->connections[clientFD], 0, sizeof(WSConnection));
+  free(socketInfo->connections[clientFD]);
+  socketInfo->connections[clientFD] = NULL;
 }
 
 static void freeConnectionPathForEachWrapper(void * pathPtr, void * pathHandlerPtr, void * contextPtr) {
@@ -230,6 +225,34 @@ static uint8_t isHTTPUpgrade(char const * const request, ssize_t length, char **
   }
 }
 
+static void rejectHandshake(WSSocket * const socketInfo, WSConnection * const client, int32_t code) {
+  socklen_t addrLen = sizeof(struct sockaddr_in);
+  char rejection[WS_BUFFER_SML];
+  char * reason;
+  switch (code) {
+    case 400:
+      reason = "Bad Request";
+      break;
+    case 404:
+      reason = "Not Found";
+      break;
+    default:
+      code = 500;
+      reason = "Internal Server Error";
+      break;
+  }
+  sprintf(rejection, "HTTP/1.1 %d %s\r\n\r\n", code, reason);
+  sendto(client->clientFD, rejection, strlen(rejection), 0, &(client->addrInfo), addrLen);
+
+  int32_t const clientFD = client->clientFD;
+  epoll_ctl(socketInfo->socketEventPoll, EPOLL_CTL_DEL, clientFD, NULL);
+  shutdown(clientFD, SHUT_RDWR);
+  close(clientFD);
+  memset(socketInfo->connections[clientFD], 0, sizeof(WSConnection));
+  free(socketInfo->connections[clientFD]);
+  socketInfo->connections[clientFD] = NULL;
+}
+
 static int8_t performHandshake(WSSocket * const socketInfo, WSConnection * const client) {
   char addr[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &(client->addrInfo.sin_addr), addr, INET_ADDRSTRLEN);
@@ -239,7 +262,8 @@ static int8_t performHandshake(WSSocket * const socketInfo, WSConnection * const
   ssize_t recvSize;
   if ((recvSize = recvfrom(client->clientFD, recvBuf, WS_BUFFER_BIG - 1, 0, (struct sockaddr *)&(client->addrInfo), &addrLen)) == -1) {
     printf("(%s): Could not read message: %s\n", addr, strerror(errno));
-    goto handshakeFail;
+    rejectHandshake(socketInfo, client, 500);
+    return -1;
   }
   recvBuf[recvSize] = '\0';
 
@@ -247,17 +271,19 @@ static int8_t performHandshake(WSSocket * const socketInfo, WSConnection * const
   char * path = NULL;
   if (!isHTTPUpgrade(recvBuf, recvSize, &path, &key)) {
     printf("(%s): Invalid websocket upgrade request.\n", addr);
-    goto handshakeFail;
+    rejectHandshake(socketInfo, client, 400);
+    return -1;
   }
   DString pathDString;
-  dstrinit(&pathDString, path, strlen(path));
+  dstrinit(&pathDString, path, strlen(path) + 1);
 
   WSPathHandler * pathHandler;
   if ((pathHandler = mapGet(&(socketInfo->paths), &pathDString)) == NULL) {
     printf("(%s): Invalid websocket path (%s).\n", addr, path);
     free(path);
     free(key);
-    goto handshakeFail;
+    rejectHandshake(socketInfo, client, 404);
+    return -1;
   }
   dstrfree(&pathDString);
   client->pathHanlder = pathHandler;
@@ -288,15 +314,6 @@ static int8_t performHandshake(WSSocket * const socketInfo, WSConnection * const
   client->recvBuffer = malloc(WS_BUFFER_SML * sizeof(char));
   client->sendBuffer = malloc(WS_BUFFER_SML * sizeof(char));
   return 0;
-
-  handshakeFail:
-    epoll_ctl(socketInfo->socketEventPoll, EPOLL_CTL_DEL, client->clientFD, NULL);
-    shutdown(client->clientFD, SHUT_RDWR);
-    close(client->clientFD);
-    memset(socketInfo->connections[client->clientFD], 0, sizeof(WSConnection));
-    free(socketInfo->connections[client->clientFD]);
-    socketInfo->connections[client->clientFD] = NULL;
-    return -1;
 }
 
 static int32_t receiveDataFrom(WSConnection * const client) {
@@ -496,7 +513,7 @@ int8_t addValidPath(WSSocket * const socketInfo, char const * const path,
     .onMessage = onMessage
   };
   DString pathDStr;
-  dstrinit(&pathDStr, path, strlen(path));
+  dstrinit(&pathDStr, path, strlen(path) + 1);
   mapPut(&(socketInfo->paths), &pathDStr, &pathHandler);
   return 0;
 }
@@ -525,6 +542,8 @@ void runSocketLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection c
           if ((closeCode = receiveDataFrom(connection)) > 1) {
             connection->pathHanlder->onDisconnect(connection);
             freeConnectionResources(socketInfo, connection, closeCode);
+            continue;
+          } else if (closeCode == 1) {
             continue;
           }
           size_t size = connection->pathHanlder->onMessage(connection, connection->recvBuffer, &(connection->sendBuffer));
