@@ -21,20 +21,21 @@
 #define WS_EVENTS_PER_LOOP 32
 #define WS_SPECIAL_KEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-#define WS_MAX_CONNECTIONS 1024 // This should be set the system's File Descriptor Limit (from ulimit -n), 1024 for testing purposes
+#define WS_FIN_BIT_END 0x80
+#define WS_OPCODE_TEXT 0x01
+#define WS_OPCODE_CLOSE 0x08
+#define WS_OPCODE_PING 0x09
+#define WS_OPCODE_PONG 0x0A
 
-#define WS_FIN_BIT_END 0x80 // 1000 0000
-#define WS_OPCODE_TEXT 0x01 // 0000 0001
-#define WS_OPCODE_CLOSE 0x08// 0000 1000
-#define WS_OPCODE_PING 0x09 // 0000 1001
-#define WS_OPCODE_PONG 0x0A // 0000 1001
+#define WS_MAX_CONNECTIONS 1024 // This should be set to the system's File Descriptor Limit (from ulimit -n), by default 1024
 
 static int8_t comparePaths(void const * key1_dstr, void const * key2_dstr) {
   return dstrcmp((DString const *)key1_dstr, (DString const *)key2_dstr);
 }
 
 static uint32_t hashString(void * key, size_t length) {
-  (void)length;
+  (void)length; // unused
+
   uint8_t * bytes = (uint8_t *)((DString *)key)->string;
   uint32_t hash = 2166136261u;
 
@@ -46,7 +47,7 @@ static uint32_t hashString(void * key, size_t length) {
   return hash;
 }
 
-static int8_t acceptNewConnection(WSSocket * const socketInfo, WSConnection * const client) {
+static int8_t acceptNewConnection(WSSocket * const socketInfo, WSConnection * const client, uint8_t assignedThread) {
   socklen_t addrLen = sizeof(struct sockaddr_in);
 
   memset(client, 0, sizeof(WSConnection));
@@ -62,12 +63,13 @@ static int8_t acceptNewConnection(WSSocket * const socketInfo, WSConnection * co
     .data.fd = client->clientFD,
     .events = EPOLLIN | EPOLLET
   };
-  if (epoll_ctl(socketInfo->socketEventPoll, EPOLL_CTL_ADD, client->clientFD, &newClientEvent) == -1) {
+  if (epoll_ctl(socketInfo->threads[assignedThread].workerEventPoll, EPOLL_CTL_ADD, client->clientFD, &newClientEvent) == -1) {
     printf("(%s): Could not track event for new client: %s\n", addr, strerror(errno));
     close(client->clientFD);
     memset(client, 0, sizeof(WSConnection));
     return -1;
   }
+  client->assignedThread = assignedThread;
 
   socketInfo->connections[client->clientFD] = calloc(1, sizeof(WSConnection));
   memcpy(socketInfo->connections[client->clientFD], client, sizeof(WSConnection));
@@ -92,25 +94,17 @@ static void freeConnectionResources(WSSocket * const socketInfo, WSConnection * 
   free(client->recvBuffer);
   free(client->sendBuffer);
 
-  epoll_ctl(socketInfo->socketEventPoll, EPOLL_CTL_DEL, client->clientFD, NULL);
+  int32_t const clientFD = client->clientFD;
+  epoll_ctl(socketInfo->threads[client->assignedThread].workerEventPoll, EPOLL_CTL_DEL, clientFD, NULL);
   
-  shutdown(client->clientFD, SHUT_RDWR);
-  close(client->clientFD);
+  shutdown(clientFD, SHUT_RDWR);
+  close(clientFD);
   
-  memset(socketInfo->connections[client->clientFD], 0, sizeof(WSConnection));
-  free(socketInfo->connections[client->clientFD]);
-  socketInfo->connections[client->clientFD] = NULL;
+  memset(socketInfo->connections[clientFD], 0, sizeof(WSConnection));
+  free(socketInfo->connections[clientFD]);
+  socketInfo->connections[clientFD] = NULL;
 }
 
-/*
-static void freeConnectionResourcesForEachWrapper(void * clientFDPtr, void * wsConnectionPtr, void * contextPtr) {
-  (void)clientFDPtr; //unused
-  
-  WSSocket * socketInfo = (WSSocket *)contextPtr;
-  WSConnection * client = (WSConnection *)wsConnectionPtr;
-  freeConnectionResources(socketInfo, client, 1001);
-}
-*/
 static void freeConnectionPathForEachWrapper(void * pathPtr, void * pathHandlerPtr, void * contextPtr) {
   (void)pathHandlerPtr; //unused
   (void)contextPtr; //unused
@@ -232,6 +226,34 @@ static uint8_t isHTTPUpgrade(char const * const request, ssize_t length, char **
   }
 }
 
+static void rejectHandshake(WSSocket * const socketInfo, WSConnection * const client, int32_t code) {
+  socklen_t addrLen = sizeof(struct sockaddr_in);
+  char rejection[WS_BUFFER_SML];
+  char * reason;
+  switch (code) {
+    case 400:
+      reason = "Bad Request";
+      break;
+    case 404:
+      reason = "Not Found";
+      break;
+    default:
+      code = 500;
+      reason = "Internal Server Error";
+      break;
+  }
+  sprintf(rejection, "HTTP/1.1 %d %s\r\n\r\n", code, reason);
+  sendto(client->clientFD, rejection, strlen(rejection), 0, &(client->addrInfo), addrLen);
+
+  int32_t const clientFD = client->clientFD;
+  epoll_ctl(socketInfo->threads[client->assignedThread].workerEventPoll, EPOLL_CTL_DEL, clientFD, NULL);
+  shutdown(clientFD, SHUT_RDWR);
+  close(clientFD);
+  memset(socketInfo->connections[clientFD], 0, sizeof(WSConnection));
+  free(socketInfo->connections[clientFD]);
+  socketInfo->connections[clientFD] = NULL;
+}
+
 static int8_t performHandshake(WSSocket * const socketInfo, WSConnection * const client) {
   char addr[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &(client->addrInfo.sin_addr), addr, INET_ADDRSTRLEN);
@@ -241,7 +263,8 @@ static int8_t performHandshake(WSSocket * const socketInfo, WSConnection * const
   ssize_t recvSize;
   if ((recvSize = recvfrom(client->clientFD, recvBuf, WS_BUFFER_BIG - 1, 0, (struct sockaddr *)&(client->addrInfo), &addrLen)) == -1) {
     printf("(%s): Could not read message: %s\n", addr, strerror(errno));
-    goto handshakeFail;
+    rejectHandshake(socketInfo, client, 500);
+    return -1;
   }
   recvBuf[recvSize] = '\0';
 
@@ -249,17 +272,19 @@ static int8_t performHandshake(WSSocket * const socketInfo, WSConnection * const
   char * path = NULL;
   if (!isHTTPUpgrade(recvBuf, recvSize, &path, &key)) {
     printf("(%s): Invalid websocket upgrade request.\n", addr);
-    goto handshakeFail;
+    rejectHandshake(socketInfo, client, 400);
+    return -1;
   }
   DString pathDString;
-  dstrinit(&pathDString, path, strlen(path));
+  dstrinit(&pathDString, path, strlen(path) + 1);
 
   WSPathHandler * pathHandler;
   if ((pathHandler = mapGet(&(socketInfo->paths), &pathDString)) == NULL) {
     printf("(%s): Invalid websocket path (%s).\n", addr, path);
     free(path);
     free(key);
-    goto handshakeFail;
+    rejectHandshake(socketInfo, client, 404);
+    return -1;
   }
   dstrfree(&pathDString);
   client->pathHanlder = pathHandler;
@@ -290,15 +315,6 @@ static int8_t performHandshake(WSSocket * const socketInfo, WSConnection * const
   client->recvBuffer = malloc(WS_BUFFER_SML * sizeof(char));
   client->sendBuffer = malloc(WS_BUFFER_SML * sizeof(char));
   return 0;
-
-  handshakeFail:
-    epoll_ctl(socketInfo->socketEventPoll, EPOLL_CTL_DEL, client->clientFD, NULL);
-    shutdown(client->clientFD, SHUT_RDWR);
-    close(client->clientFD);
-    memset(socketInfo->connections[client->clientFD], 0, sizeof(WSConnection));
-    free(socketInfo->connections[client->clientFD]);
-    socketInfo->connections[client->clientFD] = NULL;
-    return -1;
 }
 
 static int32_t receiveDataFrom(WSConnection * const client) {
@@ -409,6 +425,39 @@ static size_t sendDataTo(WSConnection const * const client, char const * buffer,
   return size;
 }
 
+static void * threadLoop(void * args) {
+   WSWorker * this = args;
+   struct epoll_event eventsTriggered[WS_EVENTS_PER_LOOP];
+   for (;;) {
+     int32_t events = epoll_wait(this->workerEventPoll, eventsTriggered, WS_EVENTS_PER_LOOP, -1);
+     for (int32_t i = 0; i < events; i++) {
+       WSConnection * const connection = this->socket->connections[eventsTriggered[i].data.fd];
+       if (connection == NULL) {
+         printf("Connection already closed.\n");
+         continue;
+       }
+       if (connection->needsHandshake) {
+         if (performHandshake(this->socket, connection) == -1)
+           continue;
+         connection->pathHanlder->onHandshake(connection);
+       } else {
+         int32_t closeCode;
+         if ((closeCode = receiveDataFrom(connection)) > 1) {
+           connection->pathHanlder->onDisconnect(connection);
+           freeConnectionResources(this->socket, connection, closeCode);
+           continue;
+         } else if (closeCode == 1) {
+           continue;
+         }
+         size_t size = connection->pathHanlder->onMessage(connection, connection->recvBuffer, &(connection->sendBuffer));
+         sendDataTo(connection, connection->sendBuffer, size);
+       }
+     }
+   }
+
+   return NULL;
+}
+
 int8_t initSocket(WSSocket * socketInfo) {
   memset(socketInfo, 0, sizeof(WSSocket));
 
@@ -476,6 +525,9 @@ void closeSocket(WSSocket * socketInfo) {
     if (socketInfo->connections[i] != NULL)
       freeConnectionResources(socketInfo, socketInfo->connections[i], 1001);
 
+  for (uint8_t i = 0; i < WS_MAX_THREADS; i++)
+    pthread_cancel(socketInfo->threads[i].thread);
+
   mapForEach(&(socketInfo->paths), NULL, freeConnectionPathForEachWrapper);
   freeMap(&(socketInfo->paths));
   
@@ -498,41 +550,33 @@ int8_t addValidPath(WSSocket * const socketInfo, char const * const path,
     .onMessage = onMessage
   };
   DString pathDStr;
-  dstrinit(&pathDStr, path, strlen(path));
+  dstrinit(&pathDStr, path, strlen(path) + 1);
   mapPut(&(socketInfo->paths), &pathDStr, &pathHandler);
   return 0;
 }
 
 void runSocketLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection const * const client)) {
+  uint8_t nextWorker = 0;
+
+  for (int32_t i = 0; i < WS_MAX_THREADS; i++) {
+    socketInfo->threads[i].socket = socketInfo;
+
+    if ((socketInfo->threads[i].workerEventPoll = epoll_create1(0)) == -1) {
+      printf("Could not create event poll for thread %d: %s\n", i, strerror(errno));
+      return;
+    }
+    
+    pthread_create(&(socketInfo->threads[i].thread), NULL, threadLoop, &(socketInfo->threads[i]));
+  }
+
   struct epoll_event eventsTriggered[WS_EVENTS_PER_LOOP];
   for (;;) {
     int32_t events = epoll_wait(socketInfo->socketEventPoll, eventsTriggered, WS_EVENTS_PER_LOOP, -1);
     for (int32_t i = 0; i < events; i++) {
-      if (eventsTriggered[i].data.fd == socketInfo->socketFD) {
-        WSConnection client;
-        acceptNewConnection(socketInfo, &client);
-        onConnect(socketInfo->connections[client.clientFD]);
-      } else {
-        WSConnection * const connection = socketInfo->connections[eventsTriggered[i].data.fd];
-        if (connection == NULL) {
-          printf("Connection already closed.\n");
-          continue;
-        }
-        if (connection->needsHandshake) {
-          if (performHandshake(socketInfo, connection) == -1)
-            continue;
-          connection->pathHanlder->onHandshake(connection);
-        } else {
-          int32_t closeCode;
-          if ((closeCode = receiveDataFrom(connection)) > 1) {
-            connection->pathHanlder->onDisconnect(connection);
-            freeConnectionResources(socketInfo, connection, closeCode);
-            continue;
-          }
-          size_t size = connection->pathHanlder->onMessage(connection, connection->recvBuffer, &(connection->sendBuffer));
-          sendDataTo(connection, connection->sendBuffer, size);
-        }
-      }
+      WSConnection client;
+      acceptNewConnection(socketInfo, &client, nextWorker++);
+      onConnect(socketInfo->connections[client.clientFD]);
+      nextWorker %= 4;
     }
   }
 }
