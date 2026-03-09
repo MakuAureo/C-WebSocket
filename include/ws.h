@@ -22,6 +22,7 @@ struct WSPathHandler {
 struct WSConnection {
   int32_t clientFD;
   int8_t needsHandshake;
+  uint8_t assignedThread;
   char * recvBuffer;
   char * sendBuffer;
   struct sockaddr_in addrInfo;
@@ -32,6 +33,7 @@ struct WSWorker {
   pthread_t thread;
   int32_t workerOpts;
   int32_t workerEventPoll;
+  WSSocket * socket;
 };
 
 struct WSSocket {

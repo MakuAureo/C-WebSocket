@@ -47,7 +47,7 @@ static uint32_t hashString(void * key, size_t length) {
   return hash;
 }
 
-static int8_t acceptNewConnection(WSSocket * const socketInfo, WSConnection * const client) {
+static int8_t acceptNewConnection(WSSocket * const socketInfo, WSConnection * const client, uint8_t assignedThread) {
   socklen_t addrLen = sizeof(struct sockaddr_in);
 
   memset(client, 0, sizeof(WSConnection));
@@ -63,12 +63,13 @@ static int8_t acceptNewConnection(WSSocket * const socketInfo, WSConnection * co
     .data.fd = client->clientFD,
     .events = EPOLLIN | EPOLLET
   };
-  if (epoll_ctl(socketInfo->socketEventPoll, EPOLL_CTL_ADD, client->clientFD, &newClientEvent) == -1) {
+  if (epoll_ctl(socketInfo->threads[assignedThread].workerEventPoll, EPOLL_CTL_ADD, client->clientFD, &newClientEvent) == -1) {
     printf("(%s): Could not track event for new client: %s\n", addr, strerror(errno));
     close(client->clientFD);
     memset(client, 0, sizeof(WSConnection));
     return -1;
   }
+  client->assignedThread = assignedThread;
 
   socketInfo->connections[client->clientFD] = calloc(1, sizeof(WSConnection));
   memcpy(socketInfo->connections[client->clientFD], client, sizeof(WSConnection));
@@ -94,7 +95,7 @@ static void freeConnectionResources(WSSocket * const socketInfo, WSConnection * 
   free(client->sendBuffer);
 
   int32_t const clientFD = client->clientFD;
-  epoll_ctl(socketInfo->socketEventPoll, EPOLL_CTL_DEL, clientFD, NULL);
+  epoll_ctl(socketInfo->threads[client->assignedThread].workerEventPoll, EPOLL_CTL_DEL, clientFD, NULL);
   
   shutdown(clientFD, SHUT_RDWR);
   close(clientFD);
@@ -245,7 +246,7 @@ static void rejectHandshake(WSSocket * const socketInfo, WSConnection * const cl
   sendto(client->clientFD, rejection, strlen(rejection), 0, &(client->addrInfo), addrLen);
 
   int32_t const clientFD = client->clientFD;
-  epoll_ctl(socketInfo->socketEventPoll, EPOLL_CTL_DEL, clientFD, NULL);
+  epoll_ctl(socketInfo->threads[client->assignedThread].workerEventPoll, EPOLL_CTL_DEL, clientFD, NULL);
   shutdown(clientFD, SHUT_RDWR);
   close(clientFD);
   memset(socketInfo->connections[clientFD], 0, sizeof(WSConnection));
@@ -425,9 +426,34 @@ static size_t sendDataTo(WSConnection const * const client, char const * buffer,
 }
 
 static void * threadLoop(void * args) {
-   (void)args;
-
-
+   WSWorker * this = args;
+   struct epoll_event eventsTriggered[WS_EVENTS_PER_LOOP];
+   for (;;) {
+     int32_t events = epoll_wait(this->workerEventPoll, eventsTriggered, WS_EVENTS_PER_LOOP, -1);
+     for (int32_t i = 0; i < events; i++) {
+       WSConnection * const connection = this->socket->connections[eventsTriggered[i].data.fd];
+       if (connection == NULL) {
+         printf("Connection already closed.\n");
+         continue;
+       }
+       if (connection->needsHandshake) {
+         if (performHandshake(this->socket, connection) == -1)
+           continue;
+         connection->pathHanlder->onHandshake(connection);
+       } else {
+         int32_t closeCode;
+         if ((closeCode = receiveDataFrom(connection)) > 1) {
+           connection->pathHanlder->onDisconnect(connection);
+           freeConnectionResources(this->socket, connection, closeCode);
+           continue;
+         } else if (closeCode == 1) {
+           continue;
+         }
+         size_t size = connection->pathHanlder->onMessage(connection, connection->recvBuffer, &(connection->sendBuffer));
+         sendDataTo(connection, connection->sendBuffer, size);
+       }
+     }
+   }
 
    return NULL;
 }
@@ -499,6 +525,9 @@ void closeSocket(WSSocket * socketInfo) {
     if (socketInfo->connections[i] != NULL)
       freeConnectionResources(socketInfo, socketInfo->connections[i], 1001);
 
+  for (uint8_t i = 0; i < WS_MAX_THREADS; i++)
+    pthread_cancel(socketInfo->threads[i].thread);
+
   mapForEach(&(socketInfo->paths), NULL, freeConnectionPathForEachWrapper);
   freeMap(&(socketInfo->paths));
   
@@ -527,45 +556,27 @@ int8_t addValidPath(WSSocket * const socketInfo, char const * const path,
 }
 
 void runSocketLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection const * const client)) {
+  uint8_t nextWorker = 0;
+
   for (int32_t i = 0; i < WS_MAX_THREADS; i++) {
+    socketInfo->threads[i].socket = socketInfo;
+
     if ((socketInfo->threads[i].workerEventPoll = epoll_create1(0)) == -1) {
       printf("Could not create event poll for thread %d: %s\n", i, strerror(errno));
       return;
     }
-    pthread_create(&(socketInfo->threads[i].thread), NULL, threadLoop, NULL);
+    
+    pthread_create(&(socketInfo->threads[i].thread), NULL, threadLoop, &(socketInfo->threads[i]));
   }
 
   struct epoll_event eventsTriggered[WS_EVENTS_PER_LOOP];
   for (;;) {
     int32_t events = epoll_wait(socketInfo->socketEventPoll, eventsTriggered, WS_EVENTS_PER_LOOP, -1);
     for (int32_t i = 0; i < events; i++) {
-      if (eventsTriggered[i].data.fd == socketInfo->socketFD) {
-        WSConnection client;
-        acceptNewConnection(socketInfo, &client);
-        onConnect(socketInfo->connections[client.clientFD]);
-      } else {
-        WSConnection * const connection = socketInfo->connections[eventsTriggered[i].data.fd];
-        if (connection == NULL) {
-          printf("Connection already closed.\n");
-          continue;
-        }
-        if (connection->needsHandshake) {
-          if (performHandshake(socketInfo, connection) == -1)
-            continue;
-          connection->pathHanlder->onHandshake(connection);
-        } else {
-          int32_t closeCode;
-          if ((closeCode = receiveDataFrom(connection)) > 1) {
-            connection->pathHanlder->onDisconnect(connection);
-            freeConnectionResources(socketInfo, connection, closeCode);
-            continue;
-          } else if (closeCode == 1) {
-            continue;
-          }
-          size_t size = connection->pathHanlder->onMessage(connection, connection->recvBuffer, &(connection->sendBuffer));
-          sendDataTo(connection, connection->sendBuffer, size);
-        }
-      }
+      WSConnection client;
+      acceptNewConnection(socketInfo, &client, nextWorker++);
+      onConnect(socketInfo->connections[client.clientFD]);
+      nextWorker %= 4;
     }
   }
 }
