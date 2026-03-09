@@ -8,5 +8,5 @@ This repository was made over a week because I wanted to learn both how WebSocke
 - ~Add more options for injecting behavior in the event loop~
 - ~Add `onDisconnect` callback~
 - ~Add path handling~
-- Add multi-threading with a accept and worker threads
+- ~Add multi-threading with a accept and worker threads~
 - Add regex options to path handling with match extraction into variables
