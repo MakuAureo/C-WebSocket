@@ -6,7 +6,7 @@
 
 #include "hashmap.h"
 
-#define WS_THREAD_COUNT 4
+#define WS_MAX_THREADS 4
 
 typedef struct WSPathHandler WSPathHandler;
 typedef struct WSConnection WSConnection;
@@ -30,7 +30,6 @@ struct WSConnection {
 
 struct WSWorker {
   pthread_t thread;
-  int32_t workerFD;
   int32_t workerOpts;
   int32_t workerEventPoll;
 };
@@ -40,7 +39,7 @@ struct WSSocket {
   int32_t socketOpts;
   int32_t socketEventPoll;
   struct sockaddr_in addrInfo;
-  WSWorker threads[WS_THREAD_COUNT];
+  WSWorker threads[WS_MAX_THREADS];
   WSConnection ** connections;
   Map paths;
 };
@@ -53,7 +52,7 @@ int8_t bindSocket(WSSocket * socketInfo, unsigned int const port);
 
 void closeSocket(WSSocket * socketInfo);
 
-// Returns 0 on success, regex error code otherwise (can be passed to `regerror`)
+// Returns 0 on success
 int8_t addValidPath(WSSocket * const socketInfo, char const * const path,
     void (*onHandshake)(WSConnection const * const client),
     void (*onDisconnect)(WSConnection const * const client),

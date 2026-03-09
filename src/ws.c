@@ -424,6 +424,14 @@ static size_t sendDataTo(WSConnection const * const client, char const * buffer,
   return size;
 }
 
+static void * threadLoop(void * args) {
+   (void)args;
+
+
+
+   return NULL;
+}
+
 int8_t initSocket(WSSocket * socketInfo) {
   memset(socketInfo, 0, sizeof(WSSocket));
 
@@ -519,6 +527,14 @@ int8_t addValidPath(WSSocket * const socketInfo, char const * const path,
 }
 
 void runSocketLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection const * const client)) {
+  for (int32_t i = 0; i < WS_MAX_THREADS; i++) {
+    if ((socketInfo->threads[i].workerEventPoll = epoll_create1(0)) == -1) {
+      printf("Could not create event poll for thread %d: %s\n", i, strerror(errno));
+      return;
+    }
+    pthread_create(&(socketInfo->threads[i].thread), NULL, threadLoop, NULL);
+  }
+
   struct epoll_event eventsTriggered[WS_EVENTS_PER_LOOP];
   for (;;) {
     int32_t events = epoll_wait(socketInfo->socketEventPoll, eventsTriggered, WS_EVENTS_PER_LOOP, -1);
