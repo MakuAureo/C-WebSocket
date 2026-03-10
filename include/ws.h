@@ -42,7 +42,7 @@ struct WSSocket {
   int32_t socketEventPoll;
   struct sockaddr_in addrInfo;
   WSWorker threads[WS_MAX_THREADS];
-  WSConnection ** connections;
+  WSConnection * connections;
   Map paths;
 };
 
