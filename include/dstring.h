@@ -16,7 +16,5 @@ void dstrfree(DString * str);
 int8_t dstrcmp(DString const * const str1, DString const * const str2);
 DString * dstrcat(DString * dest, DString const * const src);
 DString * dstrcpy(DString * dest, DString const * const src);
-DString * dstrdup(DString const * const src);
-DString * dstrstr(DString const * const src, char const * const sub);
 
 #endif

@@ -29,6 +29,8 @@
 
 #define WS_MAX_CONNECTIONS 1024 // This should be set to the system's File Descriptor Limit (from ulimit -n), by default 1024
 
+WSConnection const nullConn = {0};
+
 static int8_t comparePaths(void const * key1_dstr, void const * key2_dstr) {
   return dstrcmp((DString const *)key1_dstr, (DString const *)key2_dstr);
 }
@@ -52,7 +54,7 @@ static int8_t acceptNewConnection(WSSocket * const socketInfo, WSConnection * co
 
   memset(client, 0, sizeof(WSConnection));
   if ((client->clientFD = accept4(socketInfo->socketFD, (struct sockaddr *)&(client->addrInfo), &addrLen, SOCK_NONBLOCK)) == -1) {
-    printf("New client connection failed: %s\n", strerror(errno));
+    printf("(Server): New client connection failed: %s\n", strerror(errno));
     return -1;
   }
   char addr[INET_ADDRSTRLEN];
@@ -64,15 +66,14 @@ static int8_t acceptNewConnection(WSSocket * const socketInfo, WSConnection * co
     .events = EPOLLIN | EPOLLET
   };
   if (epoll_ctl(socketInfo->threads[assignedThread].workerEventPoll, EPOLL_CTL_ADD, client->clientFD, &newClientEvent) == -1) {
-    printf("(%s): Could not track event for new client: %s\n", addr, strerror(errno));
+    printf("(Server): Could not track event for new client: \"%s\", %s\n", addr, strerror(errno));
     close(client->clientFD);
     memset(client, 0, sizeof(WSConnection));
     return -1;
   }
   client->assignedThread = assignedThread;
 
-  socketInfo->connections[client->clientFD] = calloc(1, sizeof(WSConnection));
-  memcpy(socketInfo->connections[client->clientFD], client, sizeof(WSConnection));
+  memcpy(&(socketInfo->connections[client->clientFD]), client, sizeof(WSConnection));
 
   printf("(%s): Client connected.\n", addr);
   return 0;
@@ -100,9 +101,7 @@ static void freeConnectionResources(WSSocket * const socketInfo, WSConnection * 
   shutdown(clientFD, SHUT_RDWR);
   close(clientFD);
   
-  memset(socketInfo->connections[clientFD], 0, sizeof(WSConnection));
-  free(socketInfo->connections[clientFD]);
-  socketInfo->connections[clientFD] = NULL;
+  memset(&(socketInfo->connections[clientFD]), 0, sizeof(WSConnection));
 }
 
 static void freeConnectionPathForEachWrapper(void * pathPtr, void * pathHandlerPtr, void * contextPtr) {
@@ -112,7 +111,7 @@ static void freeConnectionPathForEachWrapper(void * pathPtr, void * pathHandlerP
   dstrfree(pathPtr);
 }
 
-static uint8_t isHTTPUpgrade(char const * const request, ssize_t length, char ** path, char ** key) {
+static uint8_t isHTTPUpgrade(char const * const request, ssize_t length, char * const * path, char * const * key) {
   enum HTTPCHECK {
     GET,
     PATH,
@@ -144,7 +143,6 @@ static uint8_t isHTTPUpgrade(char const * const request, ssize_t length, char **
         char const * pathStart = ++curr;
         while (*(curr++) != ' ') pathLenght++;
 
-        *path = malloc((pathLenght + 1) * sizeof(char));
         memcpy(*path, pathStart, pathLenght);
         (*path)[pathLenght] = '\0';
 
@@ -153,11 +151,8 @@ static uint8_t isHTTPUpgrade(char const * const request, ssize_t length, char **
       case HTTP:;
         char http[] = "HTTP/1.1";
         for (size_t i = 0; i < 8; i++)
-          if (*(curr++) != http[i]) {
-            free(path);
-            path = NULL;
+          if (*(curr++) != http[i])
             return 0;
-          }
 
         state = KEY;
         break;
@@ -203,7 +198,6 @@ static uint8_t isHTTPUpgrade(char const * const request, ssize_t length, char **
               size_t keyLength = 24;
               char const * keyStart = curr + i + 2;
 
-              *key = malloc((keyLength + 1) * sizeof(char));
               memcpy(*key, keyStart, keyLength);
               (*key)[keyLength] = '\0';
               curr += i;
@@ -217,13 +211,8 @@ static uint8_t isHTTPUpgrade(char const * const request, ssize_t length, char **
   exit:
   if (found == (FOUND_CONNECTION | FOUND_UPGRADE | FOUND_KEY))
     return 1;
-  else {
-    free(*path);
-    free(*key);
-    *path = NULL;
-    *key = NULL;
+  else
     return 0;
-  }
 }
 
 static void rejectHandshake(WSSocket * const socketInfo, WSConnection * const client, int32_t code) {
@@ -249,9 +238,7 @@ static void rejectHandshake(WSSocket * const socketInfo, WSConnection * const cl
   epoll_ctl(socketInfo->threads[client->assignedThread].workerEventPoll, EPOLL_CTL_DEL, clientFD, NULL);
   shutdown(clientFD, SHUT_RDWR);
   close(clientFD);
-  memset(socketInfo->connections[clientFD], 0, sizeof(WSConnection));
-  free(socketInfo->connections[clientFD]);
-  socketInfo->connections[clientFD] = NULL;
+  memset(&(socketInfo->connections[clientFD]), 0, sizeof(WSConnection));
 }
 
 static int8_t performHandshake(WSSocket * const socketInfo, WSConnection * const client) {
@@ -268,8 +255,8 @@ static int8_t performHandshake(WSSocket * const socketInfo, WSConnection * const
   }
   recvBuf[recvSize] = '\0';
 
-  char * key = NULL;
-  char * path = NULL;
+  char * key = alloca(WS_BUFFER_SML);
+  char * path = alloca(WS_BUFFER_BIG);
   if (!isHTTPUpgrade(recvBuf, recvSize, &path, &key)) {
     printf("(%s): Invalid websocket upgrade request.\n", addr);
     rejectHandshake(socketInfo, client, 400);
@@ -281,22 +268,20 @@ static int8_t performHandshake(WSSocket * const socketInfo, WSConnection * const
   WSPathHandler * pathHandler;
   if ((pathHandler = mapGet(&(socketInfo->paths), &pathDString)) == NULL) {
     printf("(%s): Invalid websocket path (%s).\n", addr, path);
-    free(path);
-    free(key);
     rejectHandshake(socketInfo, client, 404);
     return -1;
   }
   dstrfree(&pathDString);
   client->pathHanlder = pathHandler;
 
-  char appKey[WS_BUFFER_SML];
+  char appKey[WS_BUFFER_BIG];
   sprintf(appKey, "%s%s", key, WS_SPECIAL_KEY);
   unsigned char sha1hash[SHA_DIGEST_LENGTH];
   SHA1((unsigned char*)appKey, strlen(appKey), sha1hash);
-  free(key);
 
   size_t outLen;
-  unsigned char * finalKey = base64_encode(sha1hash, SHA_DIGEST_LENGTH, &outLen);
+  unsigned char * finalKey = alloca(WS_BUFFER_SML);
+  base64_encode(sha1hash, SHA_DIGEST_LENGTH, &finalKey, &outLen);
   char response[WS_BUFFER_BIG];
   sprintf(response, 
       "HTTP/1.1 101 Switching Protocols\r\n"
@@ -304,13 +289,11 @@ static int8_t performHandshake(WSSocket * const socketInfo, WSConnection * const
       "Connection: Upgrade\r\n"
       "Sec-WebSocket-Accept: %s\r\n\r\n", 
       finalKey);
-  free(finalKey);
 
   sendto(client->clientFD, response, strlen(response), 0, &(client->addrInfo), addrLen);
   client->needsHandshake = 0;
 
   printf("(%s): Succeful handshake on path %s\n", addr, path);
-  free(path);
 
   client->recvBuffer = malloc(WS_BUFFER_SML * sizeof(char));
   client->sendBuffer = malloc(WS_BUFFER_SML * sizeof(char));
@@ -431,8 +414,8 @@ static void * threadLoop(void * args) {
    for (;;) {
      int32_t events = epoll_wait(this->workerEventPoll, eventsTriggered, WS_EVENTS_PER_LOOP, -1);
      for (int32_t i = 0; i < events; i++) {
-       WSConnection * const connection = this->socket->connections[eventsTriggered[i].data.fd];
-       if (connection == NULL) {
+       WSConnection * const connection = &(this->socket->connections[eventsTriggered[i].data.fd]);
+       if (memcmp(connection, &nullConn, sizeof(WSConnection)) == 0) {
          printf("Connection already closed.\n");
          continue;
        }
@@ -476,7 +459,7 @@ int8_t initSocket(WSSocket * socketInfo) {
     goto closeSocket;
   }
 
-  socketInfo->connections = calloc(WS_MAX_CONNECTIONS, sizeof(WSConnection *));
+  socketInfo->connections = calloc(WS_MAX_CONNECTIONS, sizeof(WSConnection));
   initMap(&(socketInfo->paths), sizeof(DString), sizeof(WSPathHandler), comparePaths, hashString);
 
   struct epoll_event socketEvent = {
@@ -522,11 +505,14 @@ int8_t bindSocket(WSSocket * socketInfo, uint32_t const port) {
 
 void closeSocket(WSSocket * socketInfo) {
   for (int32_t i = 0; i < WS_MAX_CONNECTIONS; i++)
-    if (socketInfo->connections[i] != NULL)
-      freeConnectionResources(socketInfo, socketInfo->connections[i], 1001);
+    if (memcmp(&(socketInfo->connections[i]), &nullConn, sizeof(WSConnection)) == 0)
+      freeConnectionResources(socketInfo, &(socketInfo->connections[i]), 1001);
+
+  free(socketInfo->connections);
 
   for (uint8_t i = 0; i < WS_MAX_THREADS; i++)
-    pthread_cancel(socketInfo->threads[i].thread);
+    if (socketInfo->threads[i].thread != 0)
+      pthread_cancel(socketInfo->threads[i].thread);
 
   mapForEach(&(socketInfo->paths), NULL, freeConnectionPathForEachWrapper);
   freeMap(&(socketInfo->paths));
@@ -575,7 +561,7 @@ void runSocketLoop(WSSocket * const socketInfo, void (*onConnect)(WSConnection c
     for (int32_t i = 0; i < events; i++) {
       WSConnection client;
       acceptNewConnection(socketInfo, &client, nextWorker++);
-      onConnect(socketInfo->connections[client.clientFD]);
+      onConnect(&(socketInfo->connections[client.clientFD]));
       nextWorker %= 4;
     }
   }

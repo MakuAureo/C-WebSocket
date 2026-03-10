@@ -70,11 +70,3 @@ DString * dstrcpy(DString * dest, DString const * const src) {
   memcpy(dest->string, src->string, src->length);
   return dest;
 }
-
-//The dupped DString is heap-allocated and needs to be manually free'd
-DString * dstrdup(DString const * const src) {
-  DString * newStr = malloc(sizeof(DString));
-  dstrinit(newStr, src->string, src->length);
-
-  return newStr;
-}
