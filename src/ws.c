@@ -29,7 +29,7 @@
 
 #define WS_MAX_CONNECTIONS 1024 // This should be set to the system's File Descriptor Limit (from ulimit -n), by default 1024
 
-WSConnection const nullConn = {0};
+WSConnection const nullConn = {};
 
 static int8_t comparePaths(void const * key1_dstr, void const * key2_dstr) {
   return dstrcmp((DString const *)key1_dstr, (DString const *)key2_dstr);
