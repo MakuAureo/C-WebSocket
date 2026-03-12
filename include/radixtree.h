@@ -9,7 +9,7 @@
 typedef struct Node Node;
 typedef struct Tree RadixTree;
 
-enum NODE_TYPE {
+enum NodeType {
   NODE4 = 4,
   NODE16 = 16,
   NODE48 = 48,
@@ -17,17 +17,17 @@ enum NODE_TYPE {
 };
 
 struct Node4 {
-  char keys[NODE4];
+  uint8_t keys[NODE4];
   Node * child[NODE4];
 };
 
 struct Node16 {
-  char keys[NODE16];
+  uint8_t keys[NODE16];
   Node * child[NODE16];
 };
 
 struct Node48 {
-  char keys[256];
+  uint8_t keys[256];
   Node * child[NODE48];
 };
 
@@ -35,16 +35,20 @@ struct Node256 {
   Node * child[NODE256];
 };
 
+union Node_t {
+  struct Node4 node4;
+  struct Node16 node16;
+  struct Node48 node48;
+  struct Node256 node256;
+};
+
 struct Node {
   uint8_t isLeaf;
-  uint32_t count;
-  enum NODE_TYPE type;
-  union {
-    struct Node4 node4;
-    struct Node16 node16;
-    struct Node48 node48;
-    struct Node256 node256;
-  } node;
+  uint8_t count;
+  enum NodeType type;
+  union Node_t node;
+  char * path;
+  void * data;
 };
 
 struct Tree {
@@ -55,6 +59,6 @@ void * initRadixTree(RadixTree * tree);
 void freeRadixTree(RadixTree * tree);
 
 int8_t radixTreeInsertRegex(RadixTree * tree, char const * path);
-void * radixTreeSearch(RadixTree * tree, char const * path);
+void * radixTreeSearchRegex(RadixTree * tree, char const * path);
 
 #endif
