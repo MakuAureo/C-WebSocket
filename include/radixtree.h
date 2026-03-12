@@ -43,7 +43,6 @@ union Node_t {
 };
 
 struct Node {
-  uint8_t isLeaf;
   uint8_t count;
   enum NodeType type;
   union Node_t node;

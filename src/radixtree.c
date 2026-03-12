@@ -5,11 +5,12 @@
 #include <regex.h>
 
 static void freeNode(Node * node) {
-  if (node->isLeaf) {
+  if (node->count == 0) {
     free(node);
     node = NULL;
     return;
   }
+
   switch (node->type) {
     case NODE4:
       for (uint32_t i = 0; i < node->count; i++)
@@ -30,6 +31,7 @@ static void freeNode(Node * node) {
           freeNode(node->node.node256.child[i]);
       break;
   }
+
   free(node);
   node = NULL;
 }
@@ -40,10 +42,8 @@ void * initRadixTree(RadixTree * tree) {
     return NULL;
 
   tree->root->count = 0;
-  tree->root->isLeaf = 1;
   tree->root->type = NODE4;
   tree->root->path = "";
-  memset(&(tree->root->node), 0, sizeof(union Node_t));
   return tree->root;
 }
 
@@ -52,6 +52,9 @@ void freeRadixTree(RadixTree * tree) {
 }
 
 static Node * matchCurrentChar(Node * currNode, char const * curr) {
+  if (currNode->count == 0)
+    return NULL;
+
   switch (currNode->type) {
     // Linear search for small case O(4) -> O(1)
     case NODE4:
@@ -60,7 +63,7 @@ static Node * matchCurrentChar(Node * currNode, char const * curr) {
           return currNode->node.node4.child[i];
       break;
 
-    // Binary search for medium O(log16) -> O(1)
+    // Binary search for medium O(log16) -> O(4) -> O(1)
     case NODE16:;
       uint32_t min = 0;
       uint32_t max = currNode->count;
@@ -80,14 +83,14 @@ static Node * matchCurrentChar(Node * currNode, char const * curr) {
     // key array should be initialized to 255 O(1)
     case NODE48:;
       uint8_t idx;
-      if ((idx = currNode->node.node48.keys[*curr]) < 48)
+      if ((idx = currNode->node.node48.keys[(uint8_t)*curr]) < 48)
         return currNode->node.node48.child[idx];
       break;
 
     // Use current char as the index of the child array and check for null O(1)
     case NODE256:
-      if (currNode->node.node256.child[*curr] != NULL)
-        return currNode->node.node256.child[*curr];
+      if (currNode->node.node256.child[(uint8_t)*curr] != NULL)
+        return currNode->node.node256.child[(uint8_t)*curr];
       break;
   }
 
@@ -104,9 +107,42 @@ int8_t radixTreeInsertRegex(RadixTree * tree, char const * path) {
   //Find best path then split it
   // '/path/thy' -> '/path/t' + ('o/\d+', 'hy')
   Node * currNode = tree->root;
-  for (char const * curr = path; *curr != '\0';) {
-    while (*(currNode->path + (curr - path)) != '\0') {
+  for (char const * curr = path;;) {
+    enum PATHFLAGS {
+      NONE = 0,
+      INPUT_PATH_END = 1,
+      NODE_PATH_END = 1 << 1,
+      NODE_PATH_MATCH = 1 << 2
+    };
+    enum PATHFLAGS flag;
+
+    do {
+      uint32_t off = curr - path;
+
+      flag = NONE;
+      if (*curr == '\0') flag |= INPUT_PATH_END;
+      if (currNode->path[off] == '\0') flag |= NODE_PATH_END;
+      if (currNode->path[off] == *curr) flag |= NODE_PATH_MATCH;
+
       curr++;
+    } while (flag == NODE_PATH_MATCH);
+    
+    // The input path matches an already existing path
+    if (flag == (INPUT_PATH_END | NODE_PATH_END | NODE_PATH_MATCH))
+      return 0;
+    
+    // Find the next node that continues the path
+    if (flag == NODE_PATH_END) {
+      Node * next = matchCurrentChar(currNode, curr);
+      if (next == NULL)
+        //TODO: Add the missign path
+
+      currNode = next;
+    }
+
+    // Subpath should also be valid
+    else if (flag == INPUT_PATH_END) {
+      //TODO: Branch the rest of the node path
     }
   }
 
@@ -115,5 +151,5 @@ int8_t radixTreeInsertRegex(RadixTree * tree, char const * path) {
 }
 
 void * radixTreeSearchRegex(RadixTree * tree, char const * path) {
-  
+  return NULL;
 }
