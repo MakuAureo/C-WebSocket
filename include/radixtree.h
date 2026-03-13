@@ -1,6 +1,8 @@
 #ifndef RADIXTREE_H
 #define RADIXTREE_H
 
+#include "strSlice.h"
+
 #include <stdint.h>
 #include <stddef.h>
 
@@ -46,8 +48,8 @@ struct Node {
   uint8_t count;
   enum NodeType type;
   union Node_t node;
-  char * path;
-  void * data;
+  Slice path;
+  void const * data;
 };
 
 struct Tree {
@@ -57,7 +59,7 @@ struct Tree {
 void * initRadixTree(RadixTree * tree);
 void freeRadixTree(RadixTree * tree);
 
-int8_t radixTreeInsertRegex(RadixTree * tree, char const * path);
+int8_t radixTreeInsertRegex(RadixTree * tree, char const * path, void const * data);
 void * radixTreeSearchRegex(RadixTree * tree, char const * path);
 
 #endif
